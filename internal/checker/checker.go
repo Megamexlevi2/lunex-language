@@ -7,30 +7,12 @@ import (
 	"lunex/internal/lexer"
 	"lunex/internal/parser"
 	"path/filepath"
-	"sort"
 	"strings"
 )
 
 type Loader func(path, from string) (source, realPath string, ok bool)
 
-type Severity string
-
-const (
-	Error   Severity = "error"
-	Warning Severity = "warning"
-)
-
-type Diagnostic struct {
-	Severity Severity
-	Code     string
-	Message  string
-	File     string
-	Line     int
-	Col      int
-	Notes    []string
-	Help     string
-	Lines    []string
-}
+type Diagnostic = errfmt.LunexError
 
 type Result struct {
 	Diagnostics []Diagnostic
@@ -116,7 +98,7 @@ type state struct {
 var builtinNames = map[string]bool{
 	"undefined": true, "null": true, "true": true, "false": true, "NaN": true, "Infinity": true,
 	"lunex": true, "parseInt": true, "parseFloat": true, "isNaN": true, "isFinite": true,
-	"String": true, "str": true, "Number": true, "num": true, "Boolean": true, "print": true, "log": true,
+	"String": true, "str": true, "Number": true, "num": true, "Boolean": true,
 	"Array": true, "Object": true, "Math": true, "JSON": true, "Promise": true, "Error": true, "TypeError": true,
 	"RangeError": true, "Map": true, "Set": true, "setTimeout": true, "setInterval": true, "clearTimeout": true,
 	"clearInterval": true, "performance": true, "process": true, "encodeURIComponent": true, "decodeURIComponent": true,
@@ -124,9 +106,10 @@ var builtinNames = map[string]bool{
 }
 
 var stdModules = map[string]bool{
-	"io": true, "fs": true, "http": true, "crypto": true, "db": true, "env": true, "ws": true,
+	"io": true, "fs": true, "http": true, "crypto": true, "db": true, "env": true, "testing": true, "ws": true,
 	"utils": true, "json": true, "jwt": true, "math": true, "datetime": true, "os": true, "regex": true,
-	"buffer": true, "ints": true, "runtime": true, "internal.native": true,
+	"buffer": true, "ints": true, "runtime": true, "ffi": true, "internal.native": true,
+	"http/router": true, "http/static": true,
 }
 
 func New(opts Options) *Checker {
@@ -161,7 +144,8 @@ func (c *Checker) loadSource(source, filename string, imported bool) *moduleInfo
 		return prev
 	}
 	if c.loading[filename] {
-		c.add(Diagnostic{Severity: Error, Code: "E0401", Message: "cyclic module import detected", File: filename, Line: 1, Col: 1, Help: "remove the import cycle or move the shared definitions into a separate module"})
+		e := errfmt.CircularImportError(filename, filename, 1)
+		c.addNode(*e)
 		return nil
 	}
 	lines := strings.Split(source, "\n")
@@ -217,12 +201,14 @@ func (c *Checker) resolveImport(path, from string) *moduleInfo {
 		return m
 	}
 	if c.opts.Loader == nil {
-		c.add(Diagnostic{Severity: Error, Code: "E0400", Message: fmt.Sprintf("cannot resolve import %q", path), File: from, Line: 1, Col: 1, Help: "configure the module loader or use a resolvable local or installed module"})
+		e := errfmt.ImportError(path, from, 1)
+		c.addNode(*e)
 		return nil
 	}
 	src, real, ok := c.opts.Loader(path, from)
 	if !ok || strings.TrimSpace(real) == "" {
-		c.add(Diagnostic{Severity: Error, Code: "E0400", Message: fmt.Sprintf("module %q could not be resolved", path), File: from, Line: 1, Col: 1, Help: "check the import path, the file extension, and lunex.toml dependencies"})
+		e := errfmt.ImportError(path, from, 1)
+		c.addNode(*e)
 		return nil
 	}
 	return c.loadSource(src, real, true)
@@ -321,7 +307,6 @@ func (c *Checker) collectDecl(m *moduleInfo, n *ast.Node) {
 		return
 	}
 	if _, exists := m.symbols[name]; exists {
-		c.add(Diagnostic{Severity: Error, Code: "E0428", Message: fmt.Sprintf("the name %q is defined multiple times", name), File: m.path, Line: n.Line, Col: n.Col, Help: "rename one declaration or remove the duplicate"})
 		return
 	}
 	m.symbols[name] = symbol{name: name, kind: kind, line: n.Line, col: n.Col, arity: arity, minArity: minArity, variadic: variadic, mutable: mutable}
@@ -343,26 +328,55 @@ func (c *Checker) analyze(m *moduleInfo) {
 	if c.opts.Debug != nil {
 		c.opts.Debug("analyzing %s: %d top-level symbols", m.path, len(m.symbols))
 	}
-	if m.rootExecutable {
-		for _, n := range m.root.Body_ {
-			if n == nil {
+	for _, n := range m.root.Body_ {
+		if m.rootExecutable {
+			if e := c.topLevelErrorWithFile(n, m.path, m.lines); e != nil {
+				c.addNode(*e)
 				continue
 			}
-			switch n.Type {
-			case ast.FnDecl, ast.ClassDecl, ast.EnumDecl, ast.NamespaceDecl, ast.ComponentDecl, ast.ImportDecl, ast.ExportDecl, ast.LunexRequire, ast.ImmutableDecl, ast.UsingDecl, ast.VarDecl:
-			default:
-				c.addNode(Diagnostic{Severity: Error, Code: "E0071", Message: fmt.Sprintf("statement of type `%s` is not allowed at the top level", n.Type), File: m.path, Line: n.Line, Col: n.Col, Help: "move executable code inside `fn main() { ... }`"})
-			}
 		}
-	}
-	for _, n := range m.root.Body_ {
 		c.checkNode(n, st)
 	}
 	c.result.Symbols += len(m.symbols)
 	if m.rootExecutable && !m.stdModule && !c.opts.AllowMissingMain {
 		if _, ok := rootScope.symbols["main"]; !ok {
-			c.addNode(Diagnostic{Severity: Error, Code: "E0601", Message: "function `main` is not defined", File: m.path, Line: 1, Col: 1, Help: "add `fn main() { ... }` as the executable entry point"})
+			e := errfmt.MissingMainError(m.path, m.lines)
+			c.addNode(*e)
 		}
+	}
+}
+
+func (c *Checker) topLevelErrorWithFile(n *ast.Node, file string, lines []string) *errfmt.LunexError {
+	if n == nil {
+		return nil
+	}
+	switch n.Type {
+	case ast.FnDecl, ast.ClassDecl, ast.EnumDecl, ast.NamespaceDecl,
+		ast.ComponentDecl, ast.ExportDecl, ast.ImportDecl, ast.LunexRequire,
+		ast.UseStmt, ast.ImmutableDecl, ast.UsingDecl, ast.VarDecl:
+		return nil
+	case ast.ExprStmt:
+		expr := n.Expr
+		if expr == nil {
+			return nil
+		}
+		switch expr.Type {
+		case ast.CallExpr:
+			calleeName := ""
+			if expr.Callee != nil && expr.Callee.Type == ast.Identifier {
+				calleeName = expr.Callee.Name
+			}
+			if calleeName == "main" {
+				return errfmt.ExplicitMainCallError(file, n.Line, n.Col, lines)
+			}
+			return errfmt.TopLevelCallError(calleeName, file, n.Line, n.Col, lines)
+		case ast.AssignExpr:
+			return errfmt.TopLevelAssignmentError(file, n.Line, n.Col, lines)
+		default:
+			return errfmt.TopLevelStatementError(string(expr.Type), file, n.Line, n.Col, lines)
+		}
+	default:
+		return errfmt.TopLevelStatementError(string(n.Type), file, n.Line, n.Col, lines)
 	}
 }
 
@@ -383,9 +397,6 @@ func (c *Checker) checkNode(n *ast.Node, st *state) {
 		module := c.inferModule(n.Init, st)
 		c.checkNode(n.Init, st)
 		if n.Name != "" {
-			if _, exists := st.scope.symbols[n.Name]; exists && st.scope != nil && st.scope.kind != "module" {
-				c.addNode(Diagnostic{Severity: Error, Code: "E0428", Message: fmt.Sprintf("the name %q is defined multiple times in this scope", n.Name), File: st.file.path, Line: n.Line, Col: n.Col, Help: "rename the declaration"})
-			}
 			s := symbol{name: n.Name, kind: symVar, line: n.Line, col: n.Col, mutable: !n.IsConst}
 			if module != nil {
 				s.kind = symModule
@@ -394,13 +405,8 @@ func (c *Checker) checkNode(n *ast.Node, st *state) {
 			}
 			st.scope.symbols[n.Name] = s
 		}
-		c.checkTypeAnnotation(n.TypeAnn, st, n.Line, n.Col)
-		c.checkDestructure(n.Destructure, st, n.Line, n.Col)
 	case ast.FnDecl, ast.ComponentDecl:
 		if n.Name != "" && st.scope.kind != "module" {
-			if _, exists := st.scope.symbols[n.Name]; exists {
-				c.addNode(Diagnostic{Severity: Error, Code: "E0428", Message: fmt.Sprintf("the name %q is defined multiple times in this scope", n.Name), File: st.file.path, Line: n.Line, Col: n.Col, Help: "rename the declaration"})
-			}
 			st.scope.symbols[n.Name] = symbol{name: n.Name, kind: symFunc, line: n.Line, col: n.Col, arity: len(n.Params), mutable: false}
 		}
 		fnScope := &scope{parent: st.scope, symbols: make(map[string]symbol), kind: "function"}
@@ -408,12 +414,8 @@ func (c *Checker) checkNode(n *ast.Node, st *state) {
 			if p == nil || p.Name == "" {
 				continue
 			}
-			if _, ok := fnScope.symbols[p.Name]; ok {
-				c.addNode(Diagnostic{Severity: Error, Code: "E0415", Message: fmt.Sprintf("parameter `%s` is defined more than once", p.Name), File: st.file.path, Line: n.Line, Col: n.Col, Help: "give each parameter a unique name"})
-			}
 			fnScope.symbols[p.Name] = symbol{name: p.Name, kind: symParam, line: n.Line, col: n.Col, mutable: true}
 			c.checkNode(p.DefaultVal, &state{file: st.file, scope: fnScope, functionDepth: st.functionDepth + 1, loopDepth: st.loopDepth, classDepth: st.classDepth, reported: st.reported})
-			c.checkTypeAnnotation(p.TypeAnn, st, n.Line, n.Col)
 		}
 		if n.Body != nil {
 			c.checkNode(n.Body, &state{file: st.file, scope: fnScope, functionDepth: st.functionDepth + 1, loopDepth: st.loopDepth, classDepth: st.classDepth, reported: st.reported})
@@ -430,7 +432,8 @@ func (c *Checker) checkNode(n *ast.Node, st *state) {
 				continue
 			}
 			if _, ok := c.lookup(st.scope, sp.Imported); !ok {
-				c.addNode(Diagnostic{Severity: Error, Code: "E0432", Message: fmt.Sprintf("unresolved export `%s`", sp.Imported), File: st.file.path, Line: n.Line, Col: n.Col, Help: "export a declared name or import it before exporting"})
+				e := errfmt.UnresolvedExportError(sp.Imported, st.file.path, n.Line, n.Col, st.file.lines)
+				c.addNode(*e)
 			}
 		}
 	case ast.LunexRequire:
@@ -442,7 +445,11 @@ func (c *Checker) checkNode(n *ast.Node, st *state) {
 	case ast.Identifier:
 		if !c.isLabelIdentifier(n.Name) {
 			if _, ok := c.lookup(st.scope, n.Name); !ok && n.Name != "this" {
-				c.addNode(Diagnostic{Severity: Error, Code: "E0425", Message: fmt.Sprintf("cannot find value `%s` in this scope", n.Name), File: st.file.path, Line: n.Line, Col: n.Col, Help: c.similarHelp(n.Name, st.scope)})
+				e := errfmt.ReferenceErrorWithSimilar(n.Name, st.file.path, n.Line, n.Col, st.file.lines, c.similarNames(n.Name, st.scope))
+				if len(e.Similar) > 0 {
+					e.Notes = append(e.Notes, fmt.Sprintf("did you mean `%s`? (closest match by name)", e.Similar[0]))
+				}
+				c.addNode(*e)
 			}
 		}
 	case ast.CallExpr:
@@ -452,15 +459,10 @@ func (c *Checker) checkNode(n *ast.Node, st *state) {
 	case ast.AssignExpr:
 		c.checkAssignment(n, st)
 	case ast.ReturnStmt:
-		if st.functionDepth == 0 {
-			c.addNode(Diagnostic{Severity: Error, Code: "E0572", Message: "`return` is not valid outside a function", File: st.file.path, Line: n.Line, Col: n.Col, Help: "move the return expression into a function"})
-		}
 		c.checkNode(n.Expr, st)
 		c.checkNode(valueNode(n.Value), st)
 	case ast.BreakStmt, ast.ContinueStmt:
-		if st.loopDepth == 0 {
-			c.addNode(Diagnostic{Severity: Error, Code: "E0268", Message: fmt.Sprintf("`%s` is not valid outside a loop", n.Type), File: st.file.path, Line: n.Line, Col: n.Col, Help: "move this statement into `while`, `for`, `each`, `repeat`, or `loop`"})
-		}
+		return
 	case ast.IfStmt, ast.UnlessStmt, ast.IfHaveStmt, ast.IfSetStmt:
 		c.checkNode(n.Test, st)
 		c.checkNode(n.Subject, st)
@@ -580,7 +582,6 @@ func (c *Checker) checkImportDecl(n *ast.Node, st *state) {
 		}
 		s, ok := mod.exports[sp.Imported]
 		if !ok && !mod.stdModule {
-			c.addNode(Diagnostic{Severity: Error, Code: "E0432", Message: fmt.Sprintf("unresolved import `%s` from module %q", sp.Imported, n.Source), File: st.file.path, Line: n.Line, Col: n.Col, Help: "check the exported name in the target module"})
 			s = symbol{name: sp.Local, kind: symUnknown, line: n.Line, col: n.Col}
 		}
 		if sp.Local == "" {
@@ -593,25 +594,7 @@ func (c *Checker) checkImportDecl(n *ast.Node, st *state) {
 }
 
 func (c *Checker) checkCall(n *ast.Node, st *state) {
-	if n.Callee != nil && n.Callee.Type == ast.Identifier {
-		name := n.Callee.Name
-		s, ok := c.lookup(st.scope, name)
-		if !ok {
-			c.checkNode(n.Callee, st)
-		} else {
-			c.checkArity(s, n, st)
-		}
-	} else if n.Callee != nil && n.Callee.Type == ast.MemberExpr && !n.Callee.Computed {
-		c.checkNode(n.Callee, st)
-		key, _ := n.Callee.Prop.(string)
-		if n.Callee.Object != nil && n.Callee.Object.Type == ast.Identifier {
-			if s, ok := c.lookup(st.scope, n.Callee.Object.Name); ok && s.exports != nil {
-				if member, exists := s.exports[key]; exists {
-					c.checkArity(member, n, st)
-				}
-			}
-		}
-	} else {
+	if n.Callee != nil {
 		c.checkNode(n.Callee, st)
 	}
 	for _, a := range n.Args {
@@ -619,42 +602,10 @@ func (c *Checker) checkCall(n *ast.Node, st *state) {
 	}
 }
 
-func (c *Checker) checkArity(s symbol, n *ast.Node, st *state) {
-	if s.kind != symFunc || s.variadic {
-		return
-	}
-	got := len(n.Args)
-	if got < s.minArity || got > s.arity {
-		c.addNode(Diagnostic{Severity: Error, Code: "E0061", Message: fmt.Sprintf("this function takes %d argument(s) but %d argument(s) were supplied", s.arity, got), File: st.file.path, Line: n.Line, Col: n.Col, Help: fmt.Sprintf("provide between %d and %d argument(s)", s.minArity, s.arity)})
-	}
-}
-
 func (c *Checker) checkMember(n *ast.Node, st *state) {
 	c.checkNode(n.Object, st)
 	if n.Computed {
 		c.checkNode(valueNode(n.Prop), st)
-		return
-	}
-	key, _ := n.Prop.(string)
-	if key == "" || n.Object == nil {
-		return
-	}
-	if n.Object.Type == ast.Identifier {
-		s, ok := c.lookup(st.scope, n.Object.Name)
-		if ok && s.kind == symModule && s.exports != nil && (!s.module.stdModule || c.opts.CheckStdMembers) {
-			if _, exists := s.exports[key]; !exists {
-				c.addNode(Diagnostic{Severity: Error, Code: "E0599", Message: fmt.Sprintf("no member named `%s` found for module `%s`", key, n.Object.Name), File: st.file.path, Line: n.Line, Col: n.Col, Help: c.memberHelp(key, s.exports)})
-			}
-		}
-	}
-	if n.Object.Type == ast.ObjectLit {
-		for _, p := range n.Object.Properties {
-			if p != nil {
-				if k, ok := p.Key.(string); ok && k == key {
-					return
-				}
-			}
-		}
 	}
 }
 
@@ -665,9 +616,11 @@ func (c *Checker) checkAssignment(n *ast.Node, st *state) {
 	if n.Left.Type == ast.Identifier {
 		s, ok := c.lookup(st.scope, n.Left.Name)
 		if !ok {
-			c.addNode(Diagnostic{Severity: Error, Code: "E0425", Message: fmt.Sprintf("cannot assign to unresolved name `%s`", n.Left.Name), File: st.file.path, Line: n.Line, Col: n.Col, Help: c.similarHelp(n.Left.Name, st.scope)})
+			e := errfmt.ReferenceError(n.Left.Name, st.file.path, n.Left.Line, n.Left.Col, st.file.lines)
+			c.addNode(*e)
 		} else if !s.mutable {
-			c.addNode(Diagnostic{Severity: Error, Code: "E0594", Message: fmt.Sprintf("cannot assign to immutable `%s`", n.Left.Name), File: st.file.path, Line: n.Line, Col: n.Col, Help: "use `var` or `let` for a mutable binding"})
+			e := errfmt.ConstReassignError(n.Left.Name, st.file.path, n.Left.Line, n.Left.Col, st.file.lines)
+			c.addNode(*e)
 		}
 	} else {
 		c.checkNode(n.Left, st)
@@ -742,72 +695,14 @@ func (c *Checker) checkExprChildren(n *ast.Node, st *state) {
 	}
 	if n.Type == ast.AtImportExpr || n.Type == ast.NaxImportExpr {
 		if strings.TrimSpace(n.Source) == "" {
-			c.addNode(Diagnostic{Severity: Error, Code: "E0402", Message: "import path must not be empty", File: st.file.path, Line: n.Line, Col: n.Col, Help: "provide a module path such as `std.io` or `./src/math.lx`"})
+			e := errfmt.ImportError(n.Source, st.file.path, n.Line)
+			e.Col = n.Col
+			e.Lines = st.file.lines
+			c.addNode(*e)
 		} else {
 			mod := c.resolveImport(n.Source, st.file.path)
 			c.analyze(mod)
 		}
-	}
-}
-
-func (c *Checker) checkTypeAnnotation(v interface{}, st *state, line, col int) {
-	text := strings.TrimSpace(fmt.Sprint(v))
-	if text == "" || text == "<nil>" {
-		return
-	}
-	for _, name := range strings.FieldsFunc(text, func(r rune) bool {
-		return !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_')
-	}) {
-		if name == "" || isBuiltinType(name) {
-			continue
-		}
-		if _, ok := c.lookup(st.scope, name); !ok {
-			c.addNode(Diagnostic{Severity: Error, Code: "E0412", Message: fmt.Sprintf("cannot find type `%s` in this scope", name), File: st.file.path, Line: line, Col: col, Help: "declare the type before using it"})
-		}
-	}
-}
-
-func (c *Checker) checkDestructure(v interface{}, st *state, line, col int) {
-	if v == nil {
-		return
-	}
-	m, ok := v.(map[string]interface{})
-	if !ok {
-		c.addNode(Diagnostic{Severity: Error, Code: "E0403", Message: "invalid destructuring pattern", File: st.file.path, Line: line, Col: col, Help: "use a valid object or array destructuring pattern"})
-		return
-	}
-	bind := func(name string) {
-		if name != "" {
-			st.scope.symbols[name] = symbol{name: name, kind: symVar, line: line, col: col, mutable: true}
-		}
-	}
-	switch m["kind"] {
-	case "object":
-		if props, ok := m["props"].([]map[string]interface{}); ok {
-			for _, prop := range props {
-				if name, ok := prop["alias"].(string); ok {
-					bind(name)
-				}
-				if def, ok := prop["default"].(*ast.Node); ok {
-					c.checkNode(def, st)
-				}
-			}
-		}
-	case "array":
-		if items, ok := m["items"].([]interface{}); ok {
-			for _, item := range items {
-				if spec, ok := item.(map[string]interface{}); ok {
-					if name, ok := spec["name"].(string); ok {
-						bind(name)
-					}
-					if def, ok := spec["default"].(*ast.Node); ok {
-						c.checkNode(def, st)
-					}
-				}
-			}
-		}
-	default:
-		c.addNode(Diagnostic{Severity: Error, Code: "E0403", Message: "invalid destructuring pattern", File: st.file.path, Line: line, Col: col, Help: "use a valid object or array destructuring pattern"})
 	}
 }
 
@@ -845,7 +740,7 @@ func (c *Checker) lookup(s *scope, name string) (symbol, bool) {
 	return symbol{}, false
 }
 
-func (c *Checker) similarHelp(name string, s *scope) string {
+func (c *Checker) similarNames(name string, s *scope) []string {
 	var names []string
 	seen := make(map[string]bool)
 	for cur := s; cur != nil; cur = cur.parent {
@@ -856,40 +751,7 @@ func (c *Checker) similarHelp(name string, s *scope) string {
 			}
 		}
 	}
-	if len(names) == 0 {
-		return "declare the value before using it"
-	}
-	sort.Strings(names)
-	best := ""
-	bestScore := 999
-	for _, n := range names {
-		d := levenshtein(strings.ToLower(name), strings.ToLower(n))
-		if d < bestScore {
-			bestScore = d
-			best = n
-		}
-	}
-	if best != "" && bestScore <= 3 {
-		return fmt.Sprintf("a similar name exists: `%s`", best)
-	}
-	return "declare the value before using it"
-}
-
-func (c *Checker) memberHelp(name string, exports map[string]symbol) string {
-	var names []string
-	for n := range exports {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-	if len(names) == 0 {
-		return "the module does not expose any checked members"
-	}
-	for _, n := range names {
-		if levenshtein(strings.ToLower(name), strings.ToLower(n)) <= 3 {
-			return fmt.Sprintf("a similar member exists: `%s`", n)
-		}
-	}
-	return fmt.Sprintf("available members: %s", strings.Join(names, ", "))
+	return errfmt.FindSimilar(name, names)
 }
 
 func (c *Checker) isLabelIdentifier(name string) bool {
@@ -897,9 +759,9 @@ func (c *Checker) isLabelIdentifier(name string) bool {
 }
 
 func (c *Checker) add(d Diagnostic) {
-	key := fmt.Sprintf("%s:%d:%d:%s", d.File, d.Line, d.Col, d.Message)
+	key := fmt.Sprintf("%s:%d:%d:%s:%s", d.File, d.Line, d.Col, d.Code, d.Message)
 	for _, existing := range c.result.Diagnostics {
-		if existing.Severity == d.Severity && existing.Code == d.Code && fmt.Sprintf("%s:%d:%d:%s", existing.File, existing.Line, existing.Col, existing.Message) == key {
+		if fmt.Sprintf("%s:%d:%d:%s:%s", existing.File, existing.Line, existing.Col, existing.Code, existing.Message) == key {
 			return
 		}
 	}
@@ -926,8 +788,7 @@ func (c *Checker) addNode(d Diagnostic) {
 }
 
 func (c *Checker) addFromLunex(e errfmt.LunexError) {
-	sev := Error
-	c.add(Diagnostic{Severity: sev, Code: e.Code, Message: e.Message, File: e.File, Line: e.Line, Col: e.Col, Notes: e.Notes, Help: e.Suggestion, Lines: e.Lines})
+	c.add(e)
 }
 
 func resolveModule(path string) string {
@@ -955,15 +816,6 @@ func isStdModule(path string) bool {
 
 func isStdPath(path string) bool {
 	return strings.HasPrefix(path, "<std:")
-}
-
-func isBuiltinType(name string) bool {
-	switch strings.ToLower(name) {
-	case "any", "unknown", "never", "void", "null", "undefined", "bool", "boolean", "number", "string", "array", "object", "function", "error":
-		return true
-	default:
-		return false
-	}
 }
 
 func valueNode(v interface{}) *ast.Node {

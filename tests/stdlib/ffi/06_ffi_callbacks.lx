@@ -1,0 +1,59 @@
+val io = @import("std.io")
+val ffi = @import("std.ffi")
+
+fn check(condition, message) {
+  if !condition {
+    throw "FAIL " + message
+  }
+}
+
+fn loadLibc() {
+  val candidates = ["libc.so", "libc.so.6", "/usr/lib/libSystem.B.dylib", "msvcrt.dll", "ucrtbase.dll"]
+  var lib = undefined
+
+  each path in candidates {
+    if lib == undefined {
+      try {
+        lib = ffi.load(path)
+      } catch (err) {
+      }
+    }
+  }
+
+  check(lib != undefined, "a system C library could not be loaded")
+  lib
+}
+
+fn main() {
+  val lib = loadLibc()
+  val qsort = lib.bind("qsort", "void(ptr, usize, usize, ptr)")
+  val data = ffi.alloc(12)
+  ffi.write(data, "i32", 3)
+  ffi.write(data, "i32", 1, 4)
+  ffi.write(data, "i32", 2, 8)
+
+  val compare = ffi.callback("i32(ptr, ptr)", fn(left, right) {
+    val a = ffi.read(ffi.pointer(left), "i32")
+    val b = ffi.read(ffi.pointer(right), "i32")
+    if a < b {
+      -1
+    } elif a > b {
+      1
+    } else {
+      0
+    }
+  })
+
+  check(!compare.isNull(), "callback pointer is null")
+  qsort(data, 3, 4, compare)
+  check(compare.lastError() == "", "callback reported an error")
+  check(ffi.read(data, "i32") == 1, "callback sort first value mismatch")
+  check(ffi.read(data, "i32", 4) == 2, "callback sort second value mismatch")
+  check(ffi.read(data, "i32", 8) == 3, "callback sort third value mismatch")
+  check(ffi.close(compare), "callback close failed")
+  check(compare.callbackClosed(), "callback did not close")
+  check(ffi.free(data), "callback test allocation free failed")
+  check(ffi.close(qsort), "qsort close failed")
+  check(ffi.close(lib), "library close failed")
+  io.log("PASS ffi_callbacks")
+}

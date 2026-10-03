@@ -20,21 +20,52 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 NTL_VERSION="$(grep -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' "$SCRIPT_DIR/internal/app/version.json" | sed 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')"
 
-GO_MIN="1.23"
+GO_MIN="1.25"
 
 banner() {
     printf '\n  Lunex lang  v%s\n  Created by David Dev\n  GitHub: https://github.com/Megamexlevi2\n\n' "$NTL_VERSION"
 }
 
-detect_os() {
-    case "$(uname -s)" in
-        Linux*)
-            if [ -f /proc/version ] && grep -qi android /proc/version 2>/dev/null; then
-                echo "android"
-            else
-                echo "linux"
-            fi
+android_runtime_detected() {
+    if [ -n "${ANDROID_ROOT:-}" ] && [ -n "${ANDROID_DATA:-}" ]; then
+        return 0
+    fi
+    case "${PREFIX:-}" in
+        /data/data/com.termux/*|/data/user/*/com.termux/*|/data/user_de/*/com.termux/*)
+            return 0
             ;;
+    esac
+    for path in \
+        /system/bin/linker64 \
+        /system/bin/linker \
+        /apex/com.android.runtime/bin/linker64 \
+        /apex/com.android.runtime/bin/linker; do
+        if [ -x "$path" ]; then
+            return 0
+        fi
+    done
+    if [ -x /system/bin/getprop ] && [ -n "$(/system/bin/getprop ro.build.version.sdk 2>/dev/null)" ]; then
+        return 0
+    fi
+    if command -v getprop >/dev/null 2>&1 && [ -n "$(getprop ro.build.version.sdk 2>/dev/null)" ]; then
+        return 0
+    fi
+    if [ "$(uname -o 2>/dev/null || true)" = "Android" ]; then
+        return 0
+    fi
+    if [ -f /proc/version ] && grep -qiE 'android|bionic' /proc/version 2>/dev/null; then
+        return 0
+    fi
+    return 1
+}
+
+detect_os() {
+    if android_runtime_detected; then
+        echo "android"
+        return
+    fi
+    case "$(uname -s)" in
+        Linux*) echo "linux" ;;
         Darwin*)  echo "macos" ;;
         MINGW*|MSYS*|CYGWIN*) echo "windows" ;;
         FreeBSD*) echo "freebsd" ;;
@@ -64,10 +95,18 @@ normalize_arch() {
     esac
 }
 
-normalize_go_os() {
+normalize_host_go_os() {
     case "$1" in
         macos|darwin) echo "darwin" ;;
         android)      echo "linux" ;;
+        *)            echo "$1" ;;
+    esac
+}
+
+normalize_target_go_os() {
+    case "$1" in
+        macos|darwin) echo "darwin" ;;
+        android)      echo "android" ;;
         *)            echo "$1" ;;
     esac
 }
@@ -88,17 +127,21 @@ install_go() {
     local arch
     arch=$(detect_arch)
     local goos
-    goos=$(normalize_go_os "$(detect_os)")
-    local ver="1.23.6"
+    goos=$(normalize_host_go_os "$(detect_os)")
+    local ver="1.25.14"
     local name="go${ver}.${goos}-${arch}"
     local url="https://go.dev/dl/${name}.tar.gz"
-    local tmp
+    local tmp install_root
     tmp="$(mktemp -d)"
+    install_root="$HOME/.local/go"
     curl -fsSL "$url" -o "$tmp/go.tar.gz"
     tar -C "$tmp" -xzf "$tmp/go.tar.gz"
-    mkdir -p "$HOME/.local/bin"
-    cp -f "$tmp/go/bin/go" "$HOME/.local/bin/go"
-    export PATH="$HOME/.local/bin:$PATH"
+    rm -rf "$install_root"
+    mkdir -p "$HOME/.local" "$HOME/.local/bin"
+    mv "$tmp/go" "$install_root"
+    ln -sf "$install_root/bin/go" "$HOME/.local/bin/go"
+    export PATH="$HOME/.local/bin:$install_root/bin:$PATH"
+    rm -rf "$tmp"
     ok "Go $ver installed"
 }
 
@@ -109,7 +152,7 @@ build_go_binary() {
     target_bin="${3:-}"
     skip_uptodate="${4:-}"
 
-    goos=$(normalize_go_os "$os")
+    goos=$(normalize_target_go_os "$os")
     goarch=$(normalize_arch "$arch")
     ext="$(runtime_ext_for_os "$os")"
 
@@ -119,8 +162,10 @@ build_go_binary() {
 
     mkdir -p "$(dirname "$target_bin")"
 
-    if [ -z "$skip_uptodate" ] && [ -f "$target_bin" ]; then
-        if ! find "$SCRIPT_DIR" -maxdepth 1 \( -name "*.go" -o -name "go.mod" -o -name "go.sum" -o -name "version.json" \) -newer "$target_bin" 2>/dev/null | grep -q .; then
+    local target_meta="${target_bin}.target"
+    local target_id="${os}/${goarch}"
+    if [ -z "$skip_uptodate" ] && [ -f "$target_bin" ] && [ -f "$target_meta" ] && [ "$(cat "$target_meta" 2>/dev/null || true)" = "$target_id" ]; then
+        if ! find "$SCRIPT_DIR" -type f \( -name "*.go" -o -name "go.mod" -o -name "go.sum" -o -name "version.json" \) ! -path "$SCRIPT_DIR/.git/*" -newer "$target_bin" 2>/dev/null | grep -q .; then
             ok "Go binary is up to date"
             return
         fi
@@ -130,8 +175,16 @@ build_go_binary() {
     cd "$SCRIPT_DIR"
     log_file="$(mktemp)"
 
+    rm -f "$target_bin"
+
+    local build_tags="netgo,osusergo"
+    local build_mode=()
+    if [ "$os" = "android" ]; then
+        build_mode+=("-buildmode=pie")
+    fi
+
     if ! env GONOSUMDB='*' GOFLAGS='-mod=mod' GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 \
-        go build -trimpath -tags netgo -ldflags="-s -w" -o "$target_bin" ./cmd/lunex >"$log_file" 2>&1; then
+        go build "${build_mode[@]}" -trimpath -tags "$build_tags" -ldflags="-s -w" -o "$target_bin" ./cmd/lunex >"$log_file" 2>&1; then
         sed '/^go: downloading/d' "$log_file" >&2
         rm -f "$log_file"
         fail "Build failed"
@@ -139,6 +192,27 @@ build_go_binary() {
 
     rm -f "$log_file"
     [ -f "$target_bin" ] || fail "Build completed without producing $target_bin"
+    printf '%s\n' "$target_id" > "$target_meta"
+    if [ "$os" = "android" ]; then
+        if command -v readelf >/dev/null 2>&1; then
+            local machine interpreter
+            machine=$(readelf -h "$target_bin" 2>/dev/null | awk -F: '/Class:/{c=$2} /Machine:/{m=$2} END{gsub(/^[[:space:]]+|[[:space:]]+$/, "", c); gsub(/^[[:space:]]+|[[:space:]]+$/, "", m); print c "|" m}')
+            if [ "$goarch" = "arm64" ] && [ "$machine" != "ELF64|AArch64" ]; then
+                fail "Android arm64 build has an unexpected ELF target: $machine"
+            fi
+            if [ "$goarch" = "amd64" ] && [ "$machine" != "ELF64|Advanced Micro Devices X86-64" ]; then
+                fail "Android amd64 build has an unexpected ELF target: $machine"
+            fi
+        fi
+    fi
+    if [ "$os" = "android" ] && command -v readelf >/dev/null 2>&1; then
+        local interp
+        interp="$(readelf -lW "$target_bin" 2>/dev/null | awk '/Requesting program interpreter:/{gsub(/[\[\]]/, "", $NF); print $NF; exit}')"
+        case "$goarch:$interp" in
+            arm64:/system/bin/linker64|arm64:/apex/com.android.runtime/bin/linker64|amd64:/system/bin/linker|amd64:/apex/com.android.runtime/bin/linker) ;;
+            *) fail "Android binary has an invalid ELF interpreter: ${interp:-missing}" ;;
+        esac
+    fi
     ok "$(basename "$target_bin") built: $(du -sh "$target_bin" | cut -f1)"
 }
 
@@ -151,6 +225,7 @@ build_release() {
         "linux:amd64"
         "linux:arm64"
         "windows:amd64"
+        "windows:arm64"
         "darwin:amd64"
         "darwin:arm64"
         "android:arm64"
@@ -188,7 +263,8 @@ run_tests() {
 clean() {
     step "Cleaning build artifacts"
     cd "$SCRIPT_DIR"
-    rm -rf lunex lunex.exe release
+    rm -rf lunex lunex.exe lunex.target lunex.exe.target release
+    find release -type f -name '*.target' -delete 2>/dev/null || true
     ok "Cleaned"
 }
 

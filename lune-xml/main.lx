@@ -5,6 +5,9 @@ val _query     = @fimport("./src/query.lx")
 val _transform = @fimport("./src/transform.lx")
 val _validate  = @fimport("./src/validate.lx")
 
+fn main() {
+}
+
 fn tag(name, text) {
   if text {
     _builder.createTextElement(name, text)
@@ -36,7 +39,6 @@ fn setAll(node, attrs) {
   node
 }
 
-
 fn get(node) {
   _query.text(node)
 }
@@ -60,7 +62,6 @@ fn find(root, tag_) {
 fn findAll(root, tag_) {
   _query.selectAll(root, tag_)
 }
-
 
 fn createElement(tag_) {
   _builder.createElement(tag_)

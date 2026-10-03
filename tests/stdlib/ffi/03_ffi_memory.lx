@@ -1,0 +1,45 @@
+val io = @import("std.io")
+val ffi = @import("std.ffi")
+
+fn check(condition, message) {
+  if !condition {
+    throw "FAIL " + message
+  }
+}
+
+fn main() {
+  val ptr = ffi.alloc(32)
+  check(ptr.length() == 32, "allocation length mismatch")
+  check(ptr.isNull() == false, "allocation returned null")
+
+  ffi.write(ptr, "i32", 123456)
+  check(ffi.read(ptr, "i32") == 123456, "i32 round trip failed")
+
+  ffi.write(ptr, "f64", 3.5, 8)
+  check(ffi.read(ptr, "f64", 8) == 3.5, "f64 round trip failed")
+
+  ffi.writeBytes(ptr, [1, 2, 3, 4], 16)
+  val bytes = ffi.readBytes(ptr, 4, 16)
+  check(bytes[0] == 1 && bytes[1] == 2 && bytes[2] == 3 && bytes[3] == 4, "byte round trip failed")
+
+  val copy = ffi.alloc(8)
+  ffi.copy(copy, ptr, 8)
+  check(ffi.read(copy, "i32") == ffi.read(ptr, "i32"), "copy failed")
+
+  ffi.fill(ptr, 170, 4)
+  val filled = ffi.readBytes(ptr, 4)
+  check(filled[0] == 170 && filled[1] == 170 && filled[2] == 170 && filled[3] == 170, "fill failed")
+
+  val resized = ffi.realloc(copy, 16)
+  check(resized == copy, "realloc changed the pointer object")
+  check(copy.length() == 16, "realloc length mismatch")
+  check(ffi.read(copy, "i32") == 123456, "realloc did not preserve data")
+
+  check(ffi.free(ptr), "first free failed")
+  check(ffi.free(copy), "second free failed")
+  check(ffi.free(copy) == false, "double free was not rejected")
+
+  check(ffi.null().isNull(), "null pointer is not null")
+  check(ffi.pointer(0).isNull(), "zero pointer is not null")
+  io.log("PASS ffi_memory")
+}

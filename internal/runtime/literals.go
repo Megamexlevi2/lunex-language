@@ -112,11 +112,6 @@ func (interp *Interpreter) evalNumber(val interface{}) (*Value, error) {
 	return NumberVal(f), nil
 }
 
-// evalNumberCached parses a NumberLit node's textual value once and stores
-// the result directly on the node, so every later evaluation of the same
-// literal (e.g. inside a hot loop) skips string parsing and the numCache
-// lookup entirely. Falls back to evalNumber's parsing logic for the actual
-// conversion, but only ever runs it once per distinct AST node.
 func (interp *Interpreter) evalNumberCached(node *ast.Node) (*Value, error) {
 	val, err := interp.evalNumber(node.Value)
 	if err != nil {
@@ -353,8 +348,7 @@ func (interp *Interpreter) evalIdentifier(node *ast.Node, env *Environment) (*Va
 	if !ok {
 		allNames := visibleNames(env)
 		similar := errfmt.FindSimilar(name, allNames)
-		e := interp.runtimeError(errfmt.KindReference, "E0001",
-			fmt.Sprintf("variable `%s` was not defined", name), node, similar)
+		e := errfmt.ReferenceErrorWithSimilar(name, interp.filename, node.Line, node.Col, interp.sourceLines, similar)
 
 		if len(similar) > 0 {
 			e.Notes = append(e.Notes,

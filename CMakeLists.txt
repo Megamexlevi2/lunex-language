@@ -10,15 +10,26 @@ project(lunex
     LANGUAGES NONE
 )
 
-set(GO_MIN_VERSION "1.23")
-set(GO_INSTALL_VERSION "1.23.6")
+set(GO_MIN_VERSION "1.25")
+set(GO_INSTALL_VERSION "1.25.14")
 
 if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
     set(DETECTED_OS "linux")
-    if(EXISTS "/proc/version")
+    if(EXISTS "/system/bin/linker64" OR EXISTS "/system/bin/linker" OR
+       EXISTS "/apex/com.android.runtime/bin/linker64" OR EXISTS "/apex/com.android.runtime/bin/linker" OR
+       EXISTS "/system/bin/getprop")
+        set(DETECTED_OS "android")
+    elseif(DEFINED ENV{ANDROID_ROOT} AND DEFINED ENV{ANDROID_DATA})
+        set(DETECTED_OS "android")
+    elseif(DEFINED ENV{PREFIX})
+        string(REGEX MATCH "^/data/(data/com\.termux|user/[^/]+/com\.termux|user_de/[^/]+/com\.termux)/" TERMUX_PREFIX_MATCH "$ENV{PREFIX}")
+        if(TERMUX_PREFIX_MATCH)
+            set(DETECTED_OS "android")
+        endif()
+    elseif(EXISTS "/proc/version")
         file(READ "/proc/version" PROC_VERSION_CONTENT)
         string(TOLOWER "${PROC_VERSION_CONTENT}" PROC_VERSION_LOWER)
-        if(PROC_VERSION_LOWER MATCHES "android")
+        if(PROC_VERSION_LOWER MATCHES "android|bionic")
             set(DETECTED_OS "android")
         endif()
     endif()
@@ -49,7 +60,7 @@ set(LUNEX_TARGET_ARCH "${DETECTED_ARCH}" CACHE STRING "Target architecture for t
 if(LUNEX_TARGET_OS STREQUAL "macos")
     set(GOOS "darwin")
 elseif(LUNEX_TARGET_OS STREQUAL "android")
-    set(GOOS "linux")
+    set(GOOS "android")
 else()
     set(GOOS "${LUNEX_TARGET_OS}")
 endif()
@@ -66,6 +77,11 @@ if(LUNEX_TARGET_OS STREQUAL "windows")
     set(BIN_EXT ".exe")
 else()
     set(BIN_EXT "")
+endif()
+
+set(GO_BUILD_MODE "")
+if(LUNEX_TARGET_OS STREQUAL "android")
+    set(GO_BUILD_MODE "-buildmode=pie")
 endif()
 
 set(LUNEX_BIN "${CMAKE_SOURCE_DIR}/lunex${BIN_EXT}")
@@ -118,7 +134,7 @@ add_custom_target(banner
 add_custom_target(build ALL
     COMMAND ${CMAKE_COMMAND} -E env
         GONOSUMDB=* GOFLAGS=-mod=mod GOOS=${GOOS} GOARCH=${GOARCH} CGO_ENABLED=0
-        ${GO_EXECUTABLE} build -trimpath -tags netgo -ldflags=-s\ -w -o "${LUNEX_BIN}" ./cmd/lunex
+        ${GO_EXECUTABLE} build ${GO_BUILD_MODE} -trimpath -tags netgo,osusergo -ldflags=-s\ -w -o "${LUNEX_BIN}" ./cmd/lunex
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     DEPENDS banner
     COMMENT "Building Lunex for ${GOOS}/${GOARCH}"

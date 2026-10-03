@@ -1,0 +1,26 @@
+val io = @import("std.io")
+val ffi = @import("std.ffi")
+
+fn check(condition, message) {
+  if !condition {
+    throw "FAIL " + message
+  }
+}
+
+fn main() {
+  val text = ffi.cstring("Lunex native text")
+  check(!text.isNull(), "cstring pointer is null")
+  check(text.length() == 18, "cstring length mismatch")
+  check(text.readCString() == "Lunex native text", "cstring read failed")
+  check(text.readCString(5) == "Lunex", "bounded cstring read failed")
+
+  ffi.writeBytes(text, [65, 66, 67], 0)
+  check(text.readCString() == "ABCex native text", "cstring mutation failed")
+
+  val slice = text.slice(3, 4)
+  check(slice.length() == 4, "pointer slice length mismatch")
+  check(slice.readCString(4) == "ex n", "pointer slice read failed")
+
+  check(ffi.free(text), "cstring free failed")
+  io.log("PASS ffi_strings")
+}

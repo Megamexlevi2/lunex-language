@@ -1,0 +1,35 @@
+val io = @import("std.io")
+val ffi = @import("std.ffi")
+
+fn check(condition, message) {
+  if !condition {
+    throw "FAIL " + message
+  }
+}
+
+fn main() {
+  val scalarSize = ffi.sizeof("i32")
+  val scalarAlign = ffi.alignof("i32")
+  check(scalarSize == 4, "i32 size mismatch")
+  check(scalarAlign >= 1, "i32 alignment is invalid")
+
+  val pointerSize = ffi.sizeof("ptr")
+  check(pointerSize == 4 || pointerSize == 8, "pointer size is invalid")
+
+  val pair = ffi.typeInfo("struct{x:i32,y:f64}")
+  check(pair.kind == "struct", "struct kind mismatch")
+  check(pair.fields.length == 2, "struct field count mismatch")
+  check(pair.fields[0].name == "x", "first field name mismatch")
+  check(pair.fields[1].name == "y", "second field name mismatch")
+  check(pair.size >= 12, "struct size is too small")
+  check(pair.alignment >= 4, "struct alignment is too small")
+
+  val array = ffi.typeInfo("u8[16]")
+  check(array.kind == "array", "array kind mismatch")
+  check(array.count == 16, "array count mismatch")
+  check(array.size == 16, "array size mismatch")
+
+  val text = ffi.typeInfo("cstring")
+  check(text.pointer == true, "cstring pointer metadata mismatch")
+  io.log("PASS ffi_types")
+}

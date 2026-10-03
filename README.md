@@ -5,7 +5,7 @@ A fast, stable scripting language for backend development.
 Lunex is a statically scoped scripting language built in Go.
 It is designed to be readable, practical, and consistent for everyday backend work. The language includes a built-in standard library with support for HTTP, file system access, cryptography, databases, WebSockets, and more.
 
-It runs on Linux, macOS, Windows, and Android (Termux).
+It runs on Linux, macOS, Windows, and Android.
 
 Two ready-made modules written in Lunex are included: lune-xml and lunex-cli.
 
@@ -44,7 +44,6 @@ cd lunex-language
 cmake -B build
 cmake --build build
 ```
-
 
 ---
 
@@ -93,13 +92,13 @@ Lunex has no `return` keyword.
 
 ```lx
 fn add(a, b) {
-  a + b          // returned automatically
+  a + b          
 }
 
 val square = fn(x) { x * x }
 
-io.log(add(2, 3))    // 5
-io.log(square(5))    // 25
+io.log(add(2, 3))    
+io.log(square(5))    
 ```
 
 ### Structs
@@ -120,7 +119,7 @@ fn Animal(name, sound) {
 }
 
 val cat = Animal("Cat", "Meow")
-io.log(cat.speak())   // Cat says Meow
+io.log(cat.speak())   
 ```
 
 ### Control Flow
@@ -141,7 +140,7 @@ if n < 0 {
 guard user != null else {
   io.err("no user provided")
 }
-// execution continues here
+
 ```
 
 `unless` runs its block when the condition is **false**:
@@ -150,6 +149,19 @@ guard user != null else {
 unless connected {
   io.warn("not connected — retrying")
 }
+```
+
+`watch` runs a block whenever a watched variable or member expression changes:
+
+```lx
+var counter = 0
+
+watch counter {
+  io.log("Counter changed: " + counter)
+}
+
+counter = 10
+counter = 20
 ```
 
 `match` tests exact values — top-to-bottom, first match wins:
@@ -184,16 +196,16 @@ Arrays and strings have built-in methods — no import needed:
 ```lx
 val nums = [3, 1, 4, 1, 5]
 
-nums.sort()                              // [1, 1, 3, 4, 5]
-nums.map(fn(x) { x * 2 })              // [6, 2, 8, 2, 10]
-nums.filter(fn(x) { x > 2 })           // [3, 4, 5]
-nums.reduce(fn(acc, x) { acc + x }, 0) // 14
-nums.includes(4)                         // true
-nums.length                              // 5
+nums.sort()                              
+nums.map(fn(x) { x * 2 })              
+nums.filter(fn(x) { x > 2 })           
+nums.reduce(fn(acc, x) { acc + x }, 0) 
+nums.includes(4)                         
+nums.length                              
 
-"lunex".toUpperCase()                    // "LUNEX"
-"  hello  ".trim()                       // "hello"
-"lunex".startsWith("lun")               // true
+"lunex".toUpperCase()                    
+"  hello  ".trim()                       
+"lunex".startsWith("lun")               
 ```
 
 ### Concurrency
@@ -225,21 +237,20 @@ fn process(path) {
 
 ## CLI Reference
 
-```
+```text
 lunex run <file> [--emit ast|ir]   run a .lx source or .nax archive
 lunex start                        run the project entry from lunex.toml
 lunex debug <file>                 run with full compile diagnostics and a stack trace on error
 lunex -e "<code>"                  run a code snippet directly
 lunex repl                         start the interactive REPL
-lunex build [file] [-o]            compile the project entry
+lunex pack <file.lx|directory>    validate and bundle to .nax archive with optimized .nlo objects
 lunex check <file>                 production semantic check without running user code
 lunex see_errors <file>            show detailed compile errors
-lunex dis <file.nax>               inspect a .nax archive
 lunex init [name]                  create a new project folder
 lunex init <template> <name>       create a project from a template
                                       (http_server, database, website)
-lunex pack <dir>                   bundle a directory to .nax archive
-lunex unpack <file.nax>            extract a .nax archive to a directory
+lunex unpack <file.nax>            recover .lx code from optimized objects or extract stored source files
+lunex recover <file.nlo>               recover canonical .lx code from an NLO object
 lunex set cache <dir>              set the on-disk runtime cache directory
 lunex set cache reset              reset the cache directory to default
 lunex cache [clear]                show or clear the on-disk runtime cache
@@ -253,6 +264,13 @@ lunex version                      print version
 lunex help                         show this help
 ```
 
+Extra options: `lunex --help-extras`
+
+```text
+--jit
+--no-jit
+```
+
 > Package management is built into Lunex and implemented in Go. See below.
 
 ---
@@ -263,15 +281,15 @@ Lunex includes a Go-based package manager in the CLI, backed by `lunex.toml`
 and `lunex.lock`. See [`modulesys.md`](modulesys.md) for the full picture.
 
 ```bash
-lunex install                              # install everything in lunex.toml (local store)
-lunex install -g <url>[@version]           # install one library globally, no lunex.toml required
-lunex install -l <url>[@version]           # install one library locally for this project only
-lunex add <url>[@version]                  # add a [libraries.*] entry to lunex.toml and install it
-lunex remove <library>                     # remove a library from both stores
-lunex update [library]                     # re-resolve one or all installed libraries
-lunex list                                 # list installed libraries, with scope (local/global)
-lunex env                                  # show module store paths and project status
-lunex link                                 # link this project's [project.bin] commands globally
+lunex install
+lunex install -g <url>[@version]
+lunex install -l <url>[@version]
+lunex add <url>[@version]
+lunex remove <library>
+lunex update [library]
+lunex list
+lunex env
+lunex link
 ```
 
 Installed libraries live in `~/.lunex/modules` (global, shared across every
@@ -301,7 +319,7 @@ val pkg = @fimport("./dist/math.nax")
 Import an external library installed by Lunex:
 
 ```lx
-val xml = @import("lune-xml")   // after: https://github.com/Megamexlevi2/lunex-language/lune-xml
+val xml = @import("lune-xml")
 ```
 
 ---
@@ -312,7 +330,9 @@ val xml = @import("lune-xml")   // after: https://github.com/Megamexlevi2/lunex-
 |----------------|----------------------------------------------------------|
 | `std.io`       | Console output, input, colors, tables, spinner           |
 | `std.fs`       | File system: read, write, list, stat                     |
-| `std.http`     | HTTP client and server                                   |
+| `std.http`     | HTTP client and server primitives                        |
+| `std.http.router` | Request routing on top of `std.http`                  |
+| `std.http.static` | Static file handler on top of `std.http`              |
 | `std.crypto`   | Hashing, encoding, encryption, passwords, UUIDs          |
 | `std.db`       | SQLite-backed document database (stored on disk)         |
 | `std.ws`       | WebSocket server and client                              |
@@ -322,8 +342,12 @@ val xml = @import("lune-xml")   // after: https://github.com/Megamexlevi2/lunex-
 | `std.datetime` | Date, time, formatting, arithmetic                       |
 | `std.os`       | Process, environment variables, shell execution          |
 | `std.regex`    | Pattern matching and replacement (RE2 syntax)            |
-| `std.env`      | Environment variable access                              |
+| `std.env`      | Dotenv-compatible environment variables                  |
+| `std.ffi`      | Native shared-library loading, symbol binding, calls, callbacks, and memory access |
+| `std.testing`  | Lunex-native test registration, assertions, lifecycle hooks, diagnostics, snapshots, and execution |
 | `std.utils`    | Array, object, string, and functional helpers            |
+
+FFI targets Linux, Windows, macOS, and Android arm64. Each target uses its native dynamic loader and ABI, with Android using Bionic and `CGO_ENABLED=0`.
 
 ---
 
@@ -334,7 +358,7 @@ Check out [`examples/`](examples/) for runnable code covering everything from th
 - Hello World and basic I/O
 - Variables, destructuring, template strings
 - Structs and factory functions
-- Control flow: `if`, `while`, `each`, `guard`, `unless`, `match`, `defer`
+- Control flow: `if`, `while`, `each`, `guard`, `unless`, `watch`, `match`, `defer`
 - Standard library: math, crypto, fs, datetime, regex, os, http
 - Higher-order functions: map, filter, reduce, compose, memoize
 - Concurrent workers with `spawn` and `channel`

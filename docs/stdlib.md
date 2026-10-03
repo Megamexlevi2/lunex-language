@@ -1,6 +1,6 @@
 # Standard Library Reference
 
-Complete API reference for all built-in modules in Lunex v0.9.2.
+Complete API reference for all built-in modules in Lunex v0.9.3.
 
 All modules are embedded in the Lunex binary — no installation required.
 Import any module with `@import("std.<name>")`.
@@ -79,8 +79,8 @@ io.red(s)      io.green(s)    io.yellow(s)
 io.blue(s)     io.magenta(s)  io.cyan(s)
 io.white(s)    io.gray(s)     io.bold(s)
 io.dim(s)      io.italic(s)
-io.color("red", s)   // named color
-io.strip(s)          // remove ANSI codes from a string
+io.color("red", s)   
+io.strip(s)          
 ```
 
 ```lx
@@ -92,7 +92,7 @@ io.log(io.red("error:"), "something went wrong")
 ### Terminal detection
 
 ```lx
-io.isTerminal()   // true if stdout is an interactive terminal
+io.isTerminal()   
 ```
 
 ---
@@ -401,12 +401,12 @@ A datetime value has these readable fields:
 
 ```lx
 val now = datetime.now()
-io.log(now.iso)        // "2026-06-25T14:30:00Z"
-io.log(now.year)       // 2026
-io.log(now.month)      // 6
-io.log(now.day)        // 25
-io.log(now.unix)       // Unix timestamp in seconds
-io.log(now.timestamp)  // Unix timestamp in milliseconds
+io.log(now.iso)        
+io.log(now.year)       
+io.log(now.month)      
+io.log(now.day)        
+io.log(now.unix)       
+io.log(now.timestamp)  
 ```
 
 ### Formatting
@@ -585,9 +585,9 @@ val plaintext  = crypto.decrypt(ciphertext, key)
 ```lx
 val crypto = @import("std.crypto")
 
-val token   = crypto.jwt.sign({ userId: 42, role: "admin" }, "secret", 3600) // optional expiresIn, in seconds
-val payload = crypto.jwt.verify(token, "secret")  // object or null if invalid/expired
-val raw     = crypto.jwt.decode(token)            // payload object, without verifying the signature
+val token   = crypto.jwt.sign({ userId: 42, role: "admin" }, "secret", 3600) 
+val payload = crypto.jwt.verify(token, "secret")  
+val raw     = crypto.jwt.decode(token)            
 ```
 
 > **`crypto.jwt` is a separate, simpler implementation from the dedicated
@@ -696,110 +696,352 @@ Each entry returned by `fs.list` / `fs.readDir` is an object:
 val http = @import("std.http")
 ```
 
+`std.http` gives you the basics: a client, a server, request and response
+objects, cookies, URL helpers and status codes. It doesn't route anything. If
+you need routes, use `std.http.router`; for serving files from a folder, use
+`std.http.static`. Both are documented below.
+
+The module never guesses what you mean. JSON only goes out through `json`
+calls and options, and text goes out through `text`, `html` and `end`.
+
 ### Client
 
-| Function                          | Returns  | Description        |
-|--------------------------------------|----------|---------------------------|
-| `http.request(method, url, opts?)`   | response | Request with an arbitrary method |
-| `http.get(url, opts?)`               | response | GET request                |
-| `http.post(url, opts?)`              | response | POST request                |
-| `http.put(url, opts?)`               | response | PUT request                 |
-| `http.patch(url, opts?)`             | response | PATCH request                |
-| `http.delete(url, opts?)`            | response | DELETE request                |
-| `http.head(url)`                     | response | HEAD request                   |
+| Function                           | Description                      |
+|------------------------------------|----------------------------------|
+| `http.request(method, url, opts?)` | Request with any method          |
+| `http.get(url, opts?)`             | GET                              |
+| `http.post(url, opts?)`            | POST                             |
+| `http.put(url, opts?)`             | PUT                              |
+| `http.patch(url, opts?)`           | PATCH                            |
+| `http.delete(url, opts?)`          | DELETE                           |
+| `http.head(url, opts?)`            | HEAD                             |
 
-`opts` is `{ body, headers, timeout }`. `body` is JSON-encoded
-automatically (and `Content-Type` set) if it's an object or array.
+The URL has to be absolute and use `http` or `https`. Options:
 
-Response object: `{ ok, status, body, headers, text }` — or `{ ok: false,
-error }` if the request itself failed (e.g. couldn't connect). `body` is
-JSON-decoded automatically when the response looks like JSON; `text` always
-holds the raw response text regardless of content type. The response object
-also has a `.json()` method that parses `text` as JSON on demand.
+| Option             | Default    | Description                                                         |
+|--------------------|------------|---------------------------------------------------------------------|
+| `headers`          | none       | Object mapping header names to strings or numbers                   |
+| `body`             | none       | Request body, as a string                                           |
+| `json`             | none       | Any value that can be turned into JSON; sets `Content-Type` unless you already did |
+| `timeout`          | `30000`    | Milliseconds for the whole request, redirects and body included     |
+| `maxResponseBytes` | `10485760` | Biggest response body you're willing to accept                      |
+| `maxRedirects`     | `10`       | How many redirects to follow. `0` hands you the redirect itself     |
 
-### URL helpers
+You can't pass both `body` and `json`, and a `HEAD` request can't have a
+body. Options that don't exist are an error, which catches typos early.
 
-| Function                        | Returns | Description                                             |
-|-------------------------------------|---------|----------------------------------------------------------------|
-| `http.parseURL(url)`                | object  | `{ protocol, host, path, query, search }`                        |
-| `http.buildURL(base, params?)`      | string  | Append a query-string object to a base URL                       |
-| `http.encode(s)`                    | string  | URL-encode a string                                               |
-| `http.decode(s)`                    | string  | URL-decode a string                                               |
-| `http.statusText(code)`             | string  | Standard reason phrase for an HTTP status code                    |
+What you get back is always an object:
+
+```lx
+{ ok, status, statusText, headers, cookies, text, error, errorCode, json() }
+```
+
+`ok` is true for 2xx. Header names are lower-case, and headers that appear
+more than once are joined with `, `. `cookies` is an array with every raw
+`Set-Cookie` value, since those can't be joined safely. `text` is the body
+as received, and `json()` parses it (it throws if the body is empty or isn't
+valid JSON).
+
+When the request itself fails, nothing is thrown. You get `ok: false`,
+`status: 0`, and `error` and `errorCode` describing what happened:
+
+| `errorCode`                 | Meaning                                   |
+|-----------------------------|-------------------------------------------|
+| `E_HTTP_TIMEOUT`            | The time limit ran out                    |
+| `E_HTTP_NETWORK`            | DNS, connection, TLS or other transport failure |
+| `E_HTTP_TOO_MANY_REDIRECTS` | More redirects than `maxRedirects`        |
+| `E_HTTP_RESPONSE_TOO_LARGE` | Body bigger than `maxResponseBytes`       |
+
+```lx
+val resp = http.post("https://api.example.com/items", {
+  json: { name: "book" },
+  headers: { Authorization: "Bearer token" },
+  timeout: 5000
+})
+
+if resp.ok {
+  io.log(resp.json())
+} else {
+  io.log(resp.status, resp.errorCode)
+}
+```
+
+### Errors
+
+Mistakes in how you call something (wrong types, unknown options, a bad URL,
+a header with a line break in it) throw an object you can catch:
+
+```lx
+{ name: "HttpError", code, message, status }
+```
+
+`http.error(status, message, code?)` builds one, and you can throw it from a
+handler to answer with that status. Statuses go from 400 to 599, and the
+message is only sent to the client when the status is below 500.
+
+| `code`                     | When                                                 |
+|----------------------------|------------------------------------------------------|
+| `E_HTTP_INVALID_ARGUMENT`  | An argument or option has the wrong type or value    |
+| `E_HTTP_INVALID_URL`       | A URL can't be parsed or isn't http/https            |
+| `E_HTTP_INVALID_HEADER`    | A header name or value isn't valid                   |
+| `E_HTTP_INVALID_STATUS`    | A status code is out of range                        |
+| `E_HTTP_INVALID_JSON`      | JSON couldn't be produced or parsed                  |
+| `E_HTTP_INVALID_COOKIE`    | A cookie name, value or option isn't valid           |
+| `E_HTTP_RESPONSE_FINISHED` | You used `res` after the response was already sent   |
+| `E_HTTP_ALREADY_LISTENING` | `listen` was called twice, or after `close`          |
+| `E_HTTP_LISTEN_FAILED`     | The port couldn't be bound                           |
 
 ### Server
 
-`http.createServer(handler?)` creates a server. `handler`, if given, is a
-catch-all `fn(req, res)` called for any request that doesn't match a
-registered route. Start it with `http.listen(server, port, host?, onReady?)`
-— `host` defaults to listening on all interfaces and may be omitted in
-favor of passing `onReady` as the third argument directly.
-
 ```lx
-val server = http.createServer()
-
-server
-  .get("/", fn(req, res) { res.text("Hello from Lunex!") })
-  .get("/users/:id", fn(req, res) { res.json({ id: req.params.id }) })
-  .post("/users", fn(req, res) { res.json(req.body, 201) })
-  .use(fn(req, res, next) { io.log(req.method, req.path); next() })
-
-http.listen(server, 3000, fn() {
-  io.log("Listening on http://localhost:3000")
-})
+val server = http.createServer(handler, options?)
+server.listen(port, host?, onReady?)
+server.close(timeoutMs?)
 ```
 
-**Request object:** `{ method, url, path, query, params, headers, body, ip, host }`
+`handler` is `fn(req, res)`. `listen` needs a port (`0` lets the system pick
+one). `host` defaults to `"0.0.0.0"`, and `onReady` is called with the port
+that was bound. Once listening, `server.port` and `server.host` are filled in
+and `listen` returns the server. `close` stops taking new connections and
+gives running requests up to `timeoutMs` (default `5000`) to finish; calling
+it again is harmless.
 
-- `path` is the URL without the query string; `query` is the parsed query
-  object; `params` holds named route params (e.g. `:id`) matched by the
-  current route, and is empty for requests that don't go through a
-  pattern-matched route.
+`http.listen(server, port, host?, onReady?)` and `http.close(server, timeoutMs?)`
+do the same thing as the methods.
 
-**Router methods on a server**, each returning the server so calls can be
-chained:
+| Option              | Default   | Description                                                   |
+|---------------------|-----------|---------------------------------------------------------------|
+| `maxBodyBytes`      | `1048576` | Biggest request body. Bigger ones get a `413`                 |
+| `maxHeaderBytes`    | `65536`   | Biggest header block                                          |
+| `maxHeaderCount`    | `100`     | Most headers allowed. More get a `431`                        |
+| `readHeaderTimeout` | `10000`   | Milliseconds to receive the headers                           |
+| `readTimeout`       | `30000`   | Milliseconds to receive the whole request                     |
+| `writeTimeout`      | `60000`   | Milliseconds to send the response                             |
+| `idleTimeout`       | `60000`   | Milliseconds an idle keep-alive connection stays open         |
+| `handlerTimeout`    | `30000`   | Milliseconds the handler has to respond. After that: `504`    |
+| `onError`           | none      | `fn(err, req, res)`, called when the handler throws           |
 
-| Method                              | Description                                          |
-|--------------------------------------|-------------------------------------------------------|
-| `server.get(pattern, handler)`        | Register a GET route                                   |
-| `server.post(pattern, handler)`       | Register a POST route                                  |
-| `server.put(pattern, handler)`        | Register a PUT route                                   |
-| `server.patch(pattern, handler)`      | Register a PATCH route                                 |
-| `server.delete(pattern, handler)`     | Register a DELETE route                                |
-| `server.all(pattern, handler)`        | Register a route matching any method                     |
-| `server.use(handler)`                 | Register middleware run before route handlers, `fn(req, res, next)` |
-| `server.use(pattern, handler)`        | Middleware scoped to paths under `pattern`                |
-| `server.close()`                      | Stop the server                                            |
-| `server.port`                         | The port the server is listening on                         |
+The timeouts can be turned off with `0`. Unknown options are an error.
 
-Route patterns support `:name` params (e.g. `/users/:id`).
+A few things worth knowing about how requests run. The body is read in full
+(up to `maxBodyBytes`) before your handler is called, and requests that are
+malformed or too large are answered without reaching it. Handlers run one at
+a time, so don't have a handler make a blocking request to its own server.
+Each request gets exactly one response: a second `res.json(...)` throws
+`E_HTTP_RESPONSE_FINISHED`. The response doesn't have to be sent before the
+handler returns, so spawned code can send it later, as long as that happens
+within `handlerTimeout`.
 
-**Response object methods** (the `res` passed into every handler):
+If the handler throws, `onError` runs first when you set one. If the response
+still hasn't been sent, the server sends the `HttpError` status, or a plain
+`500` for any other error, and logs the error to stderr. If the client
+disconnects, the pending response is dropped. Every response carries
+`X-Content-Type-Options: nosniff`.
 
-| Method                              | Description                                          |
-|--------------------------------------|---------------------------------------------------------|
-| `res.json(value, status?)`            | Send a JSON response (default status 200)                |
-| `res.send(value, status?)`            | Send a response; JSON-encodes objects/arrays, sends strings as text |
-| `res.text(text, status?)`             | Send a plain-text response                                |
-| `res.html(html, status?)`             | Send an HTML response                                     |
-| `res.redirect(url, status?)`          | Send a redirect (default status 302)                        |
-| `res.status(code)`                    | Set the status code for a subsequent `.send`/`.end`; returns `res` |
-| `res.setHeader(name, value)`          | Set a response header; returns `res`                        |
-| `res.getHeader(name)`                 | Read a header already set on this response                    |
-| `res.removeHeader(name)`              | Remove a previously set header                                 |
-| `res.cookie(name, value, opts?)`      | Set a `Set-Cookie` header                                        |
-| `res.clearCookie(name)`               | Clear a cookie                                                    |
-| `res.end(body?)`                      | End the response, optionally with a raw body                       |
+**Request**
 
-The global convenience functions `http.text(res, text, status)`,
-`http.json(res, value, status)`, `http.html(res, html, status)`, and
-`http.redirect(res, url, status?)` are equivalent to calling the
-corresponding method on `res` directly — both styles work.
+| Field / method     | Description                                                      |
+|--------------------|------------------------------------------------------------------|
+| `req.method`       | Request method                                                   |
+| `req.url`          | Path plus query string, as requested                             |
+| `req.path`         | Decoded path                                                     |
+| `req.rawPath`      | Path exactly as sent, still percent-encoded                      |
+| `req.query`        | First value of each query parameter                              |
+| `req.queryAll`     | Every value of each query parameter, as arrays                   |
+| `req.headers`      | Headers with lower-case names                                    |
+| `req.cookies`      | Cookies from the `Cookie` header                                 |
+| `req.body`         | Raw body as a string                                             |
+| `req.ip`           | Client address, without the port                                 |
+| `req.host`         | The `Host` header                                                |
+| `req.text()`       | Same as `req.body`                                               |
+| `req.json()`       | Parses the body as JSON. Throws `E_HTTP_INVALID_JSON` (status 400) if it's empty or invalid |
+| `req.header(name)` | One header, case-insensitive, or `null`                          |
 
-| Function                              | Description                                          |
-|--------------------------------------------|-------------------------------------------------------------|
-| `http.parseBody(req)`                        | Parse `req.body`: JSON-decodes it if it looks like JSON, otherwise returns it as-is |
-| `http.serveStatic(dir)`                      | Returns a `{ staticDir }` descriptor for serving static files from `dir`; pass it to `server.use(...)` |
+**Response**
+
+| Method                           | Description                                                   |
+|----------------------------------|---------------------------------------------------------------|
+| `res.status(code)`               | Sets the status (200–599) for the body call that follows; returns `res` |
+| `res.setHeader(name, value)`     | Sets a header; returns `res`                                  |
+| `res.getHeader(name)`            | Reads a header you set, or `null`                             |
+| `res.removeHeader(name)`         | Removes a header; returns `res`                               |
+| `res.cookie(name, value, opts?)` | Adds a `Set-Cookie`; returns `res`                            |
+| `res.clearCookie(name, opts?)`   | Expires a cookie; returns `res`                               |
+| `res.json(value, status?)`       | Sends `value` as JSON                                         |
+| `res.text(string, status?)`      | Sends `text/plain`                                            |
+| `res.html(string, status?)`      | Sends `text/html`                                             |
+| `res.end(string?, status?)`      | Sends a raw string and leaves `Content-Type` alone            |
+| `res.redirect(url, status?)`     | Redirects with 301, 302 (default), 303, 307 or 308            |
+| `res.finished()`                 | `true` once the response has been sent                        |
+
+`json`, `text`, `html`, `end` and `redirect` all finish the response. `json`
+wants a value (`undefined` is refused), `text` and `html` want a string, and
+`end` takes a string or nothing. A `204` or `304` never carries a body.
+`Content-Length` and `Transfer-Encoding` belong to the server, and cookies go
+through `res.cookie` rather than `setHeader`.
+
+If you prefer functions over methods, `http.json(res, value, status?)`,
+`http.text(res, string, status?)`, `http.html(res, string, status?)`,
+`http.end(res, string?, status?)` and `http.redirect(res, url, status?)` call
+the matching method.
+
+```lx
+fn handle(req, res) {
+  if req.path == "/health" {
+    res.json({ status: "ok" })
+  } else {
+    res.text("not found", 404)
+  }
+}
+
+val server = http.createServer(handle, { maxBodyBytes: 65536 })
+server.listen(3000)
+```
+
+### Cookies
+
+`res.cookie` and `http.serializeCookie(name, value, opts?)` take the same
+options. A bad name, value or option throws `E_HTTP_INVALID_COOKIE`.
+
+| Option     | Default | Description                                       |
+|------------|---------|---------------------------------------------------|
+| `path`     | `"/"`   | Cookie path                                       |
+| `domain`   | none    | Cookie domain                                     |
+| `maxAge`   | none    | Lifetime in whole seconds                         |
+| `secure`   | `false` | Only send over HTTPS                              |
+| `httpOnly` | `true`  | Keep it away from scripts in the browser          |
+| `sameSite` | `"lax"` | `"lax"`, `"strict"` or `"none"` (`"none"` needs `secure: true`) |
+
+`http.parseCookies(header)` turns a `Cookie` header value into an object. If
+a name shows up twice, the first one wins. Values are not percent-decoded.
+
+### URL helpers
+
+| Function                       | Description                                                          |
+|--------------------------------|----------------------------------------------------------------------|
+| `http.parseURL(url)`           | Returns `{ protocol, username, host, hostname, port, path, query, search, hash }` |
+| `http.buildURL(base, params?)` | Adds query parameters to a URL; arrays repeat the key, keys are sorted |
+| `http.parseQuery(s, all?)`     | Parses a query string; with `all: true` every value is an array      |
+| `http.buildQuery(obj)`         | Builds an encoded query string, sorted by key                        |
+| `http.encode(s)`               | Percent-encodes everything except `A-Z a-z 0-9 - _ . ~`              |
+| `http.decode(s)`               | Percent-decodes; `+` stays `+`. Throws on bad escapes                |
+| `http.statusText(code)`        | The standard reason phrase                                           |
+
+`http.status` has the usual names: `OK`, `CREATED`, `NO_CONTENT`,
+`BAD_REQUEST`, `UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `CONFLICT`,
+`UNPROCESSABLE_ENTITY`, `TOO_MANY_REQUESTS`, `INTERNAL_SERVER_ERROR`,
+`SERVICE_UNAVAILABLE` and a few more.
+
+---
+
+## `std.http.router` — Routing
+
+```lx
+val http   = @import("std.http")
+val router = @import("std.http.router")
+
+val api = router.create([
+  router.get("/users/:id", users.show),
+  router.post("/users", users.create),
+  router.delete("/users/:id", users.remove)
+])
+
+api.listen(3000)
+```
+
+`router.get`, `post`, `put`, `patch`, `delete`, `head`, `options` and `all`
+each take `(path, handler)` and return a route definition. `all` matches any
+method. `router.create(routes, options?)` turns an array of definitions into
+a router. It throws `E_ROUTER_INVALID_ROUTE` if something is wrong, such as a
+bad path or two routes that are the same.
+
+Paths start with `/`. A segment written `:name` matches any single segment
+and puts the decoded text in `req.params.name`; names are letters, digits and
+`_`, can't start with a digit, and can't repeat within a path. A final `*`
+matches whatever is left, including nothing, and lands in `req.params["*"]`.
+Everything else must match exactly, including case. A trailing `/` on the
+request is ignored, while an empty segment (`//`), more than 64 segments or
+more than 2048 characters never match.
+
+Routes are stored in a trie of path segments, so lookup cost depends on the
+length of the path and not on how many routes you have. At each segment the
+exact match is tried first, then `:name`, then `*`, and the search backs up
+if a branch has nothing for the request's method.
+
+Method rules:
+
+- A route made with `all` is used when nothing matches the exact method.
+- `HEAD` falls back to the `GET` route.
+- If the path exists but not for that method, the answer is `405` with an
+  `Allow` header. An `OPTIONS` request gets `204` with `Allow`.
+- If nothing matches, the answer is `404`. A malformed path gets `400`.
+- Those replies are JSON, `{ "error": ..., "code": ... }`, with the codes
+  `E_ROUTER_NOT_FOUND`, `E_ROUTER_METHOD_NOT_ALLOWED` and `E_ROUTER_BAD_PATH`.
+
+Handlers get the normal `(req, res)` from `std.http` with `req.params` added.
+There's no middleware. When you want shared behavior, wrap the handler in a
+function:
+
+```lx
+fn requireAuth(handler) {
+  fn(req, res) {
+    if req.header("authorization") == null {
+      throw http.error(401, "unauthorized")
+    }
+    handler(req, res)
+  }
+}
+
+router.get("/account", requireAuth(account.show))
+```
+
+Options for `router.create`:
+
+| Option     | Description                                                           |
+|------------|-----------------------------------------------------------------------|
+| `notFound` | `fn(req, res)` used in place of the default `404` reply               |
+| `onError`  | `fn(err, req, res)` called when a route handler throws                |
+| `server`   | Options handed to `http.createServer` when you call `api.listen`      |
+
+The router object has three members:
+
+| Member                              | Description                                                   |
+|-------------------------------------|---------------------------------------------------------------|
+| `api.handle(req, res)`              | The request handler, if you'd rather call `http.createServer(api.handle)` yourself |
+| `api.listen(port, host?, onReady?)` | Creates a server (using `options.server`), listens, and returns it |
+| `api.find(method, rawPath)`         | Returns `{ found, params, pattern, allowed }` without running any handler |
+
+---
+
+## `std.http.static` — Static files
+
+```lx
+val router = @import("std.http.router")
+val files  = @import("std.http.static")
+
+val assets = files.create("./public", { prefix: "/assets", maxAge: 3600 })
+
+val api = router.create([
+  router.get("/assets", assets),
+  router.get("/assets/*", assets)
+])
+```
+
+`files.create(root, options?)` returns a `fn(req, res)` handler that serves
+files from `root` on `GET` and `HEAD` requests (other methods get a `405`).
+`root` has to be an existing directory.
+
+| Option     | Default        | Description                                                      |
+|------------|----------------|------------------------------------------------------------------|
+| `prefix`   | `"/"`          | Part of the URL path to drop before looking for the file         |
+| `index`    | `"index.html"` | File to serve for a directory. `""` turns directory indexes off  |
+| `dotfiles` | `"deny"`       | `"allow"` serves files and folders whose names start with `.`    |
+| `maxAge`   | `0`            | Seconds for `Cache-Control: public, max-age=...`. `0` sends none |
+
+Anything that isn't a regular file inside `root` gets a `404`. Paths with
+`..` segments, backslashes or NUL bytes are refused, and so are symbolic links
+that point outside `root`. The content type comes from the file extension, and
+range and conditional requests work.
 
 ---
 
@@ -809,13 +1051,17 @@ corresponding method on `res` directly — both styles work.
 val ws = @import("std.ws")
 ```
 
-A minimal WebSocket server and client. Text frames only.
+`std.ws` implements RFC 6455 WebSockets with text messages, control frames,
+fragmentation, client masking, random handshake keys, and both `ws://` and
+`wss://` client connections. DNS resolution uses the operating system
+resolver.
 
 ### Server
 
-`ws.createServer(port, connHandler?)` starts listening immediately and
+`ws.createServer(port, connHandler?, options?)` starts listening immediately and
 returns a server handle. `connHandler(client)` is called once per new
-connection with a client object.
+connection with a client object. The optional options object supports TLS with
+`certFile` and `keyFile`.
 
 ```lx
 val server = ws.createServer(8081, fn(client) {
@@ -827,33 +1073,45 @@ val server = ws.createServer(8081, fn(client) {
 io.log("listening on port", server.port)
 ```
 
-| Function                     | Description                                        |
-|-------------------------------|----------------------------------------------------|
-| `ws.createServer(port, connHandler?)` | Start a server; returns `{ port, broadcast(msg), clientCount(), close() }` |
-| `ws.send(client, msg)`         | Shorthand for `client.send(msg)`                    |
-| `ws.onMessage(client, fn)`     | Shorthand for `client.onMessage(fn)`                |
-| `ws.onClose(client, fn)`       | Shorthand for `client.onClose(fn)`                  |
-| `ws.closeServer(server)`       | Shorthand for `server.close()`                      |
+| Function | Description |
+|---|---|
+| `ws.createServer(port, connHandler?, options?)` | Start a WebSocket server; returns `{ port, secure, broadcast(msg), clientCount(), close() }` |
+| `ws.send(client, msg)` | Shorthand for `client.send(msg)` |
+| `ws.onMessage(client, fn)` | Shorthand for `client.onMessage(fn)` |
+| `ws.onClose(client, fn)` | Shorthand for `client.onClose(fn)` |
+| `ws.closeServer(server)` | Shorthand for `server.close()` |
 
 A **client object** (passed into `connHandler`, or returned by `ws.connect`)
 has these methods:
 
-| Method                  | Description                                        |
-|--------------------------|----------------------------------------------------|
-| `client.send(msg)`       | Send a text frame (objects/arrays are JSON-encoded) |
-| `client.close()`         | Close the connection                                |
-| `client.onMessage(fn)`   | Register a handler for `fn(message)`                |
-| `client.onClose(fn)`     | Register a handler called when the connection closes |
-| `client.isClosed()`      | True if the connection has been closed              |
+| Method | Description |
+|---|---|
+| `client.send(msg)` | Send a text message; objects and arrays are JSON-encoded |
+| `client.close()` | Close the connection |
+| `client.onMessage(fn)` | Register `fn(message)` |
+| `client.onClose(fn)` | Register a close callback |
+| `client.isClosed()` | Return whether the connection is closed |
 
-A **server object** (returned by `ws.createServer`) has:
+A **server object** has:
 
-| Method                     | Description                            |
-|------------------------------|-----------------------------------------|
-| `server.port`                | The port the server is listening on      |
-| `server.broadcast(msg)`      | Send a message to every connected client |
-| `server.clientCount()`       | Number of currently connected clients    |
-| `server.close()`             | Stop accepting new connections           |
+| Method | Description |
+|---|---|
+| `server.port` | The listening port |
+| `server.secure` | `true` when TLS is enabled |
+| `server.broadcast(msg)` | Send a message to every connected client |
+| `server.clientCount()` | Return the number of connected clients |
+| `server.close()` | Stop accepting new connections |
+
+For a secure server, provide PEM certificate and private-key files:
+
+```lx
+val server = ws.createServer(8443, fn(client) {
+  client.onMessage(fn(msg) { client.send(msg) })
+}, { certFile: "server.crt", keyFile: "server.key" })
+```
+
+TLS servers use TLS 1.2 or newer. The `server.secure` property is `true` when
+TLS is enabled.
 
 ### Client
 
@@ -864,14 +1122,22 @@ client.send("hello")
 client.close()
 ```
 
-| Function              | Description                                  |
-|------------------------|-----------------------------------------------|
-| `ws.connect(url)`      | Connect to a server; returns a client object    |
-| `ws.closeClient(client)` | Shorthand for `client.close()`                |
+Secure WebSockets are supported through `wss://` and use TLS 1.2 or newer.
 
-> **Known limitation:** only the `ws://` scheme is supported. `ws.connect`
-> with a `wss://` URL always fails with "wss:// (TLS) not supported; use
-> ws://" — there is no TLS/secure WebSocket support in this build.
+```lx
+val client = ws.connect("wss://example.com/socket")
+client.onMessage(fn(msg) { io.log(msg) })
+client.send("hello")
+```
+
+| Function | Description |
+|---|---|
+| `ws.connect(url)` | Connect using `ws://` or `wss://`; returns a client object |
+| `ws.closeClient(client)` | Shorthand for `client.close()` |
+
+The client generates a cryptographically random `Sec-WebSocket-Key` for every
+handshake. Client-to-server frames are masked with a fresh random masking key,
+while server-to-client frames are sent unmasked as required by RFC 6455.
 
 ---
 
@@ -881,204 +1147,224 @@ client.close()
 val db = @import("std.db")
 ```
 
-Each named database is a SQLite file stored on disk under
-`.lunex/data/<n>.db` (created on first use). Tables are plain SQLite tables
-holding JSON documents, so data survives process restarts; it is not an
-in-memory store.
+`std.db` is a persistent document database backed by SQLite. Databases are
+stored as `.db` files under `.lunex/data/`, and data survives process
+restarts.
 
-### Opening a database
+### Database lifecycle
 
-| Function              | Description                                                |
-|------------------------|--------------------------------------------------------------|
-| `db.open(name?)`       | Open (or create) a named database; default name `"default"`    |
-| `db.create(name?)`     | Alias for `db.open`                                            |
-| `db.connect(name?)`    | Alias for `db.open`                                            |
-| `db.drop(name)`        | Delete a database file entirely                                |
-| `db.list()`            | Array of names of databases that exist on disk                 |
-| `db.table(name)`       | Shorthand: get a table on the **default** database, no explicit `open()` needed |
-| `db.collection(name)`  | Alias for `db.table`                                            |
+| Function | Description |
+|---|---|
+| `db.open(name?)` | Open or create a database. The default name is `default`. |
+| `db.create(name?)` | Alias for `db.open`. |
+| `db.connect(name?)` | Alias for `db.open`. |
+| `db.drop(name)` | Delete a database file and its SQLite sidecar files. |
+| `db.list()` | Return database names found under `.lunex/data/`. |
+| `db.table(name)` | Get or create a table on the default database. |
+| `db.collection(name)` | Alias for `db.table`. |
 
-`db.open()` / `db.create()` / `db.connect()` return a **database object**:
-
-| Method                          | Description                                          |
-|----------------------------------|--------------------------------------------------------|
-| `database.table(name)`           | Get (or create) a table object                          |
-| `database.collection(name)`      | Alias for `.table`                                       |
-| `database.tables()`              | Array of table names in this database                    |
-| `database.drop(name)`            | Drop one table from this database                         |
-| `database.transaction(fn)`       | Run `fn(database)`; the return value is passed through     |
-| `database.dump()`                | Object of `{ tableName: [rows...] }` for every table        |
-| `database.load(data)`            | Bulk-insert from a `{ tableName: [rows...] }` object         |
-| `database.close()`               | Close the underlying SQLite connection                       |
-| `database.name` / `database.path`| The database's name and file path                            |
+A database object exposes `table`, `collection`, `tables`, `drop`, `transaction`,
+`dump`, `load`, `close`, `name`, and `path`.
 
 ```lx
-val users = db.table("users")   // shorthand for db.open().table("users")
+val database = db.open("app")
+val users = database.table("users")
+io.log(database.path)
+database.close()
 ```
 
-### Schema definition (optional)
+### Schema
 
 ```lx
 users.schema({
-  id:    { type: "string", default: "$uuid" }
-  name:  { type: "string", required: true }
+  id: { type: "string", default: "$uuid" }
+  active: { type: "boolean", default: true }
+  name: { type: "string", required: true }
   email: { type: "string", required: true, unique: true }
-  age:   { type: "number", default: 0, min: 0 }
+  age: { type: "number", default: 0, min: 0 }
 })
 ```
 
-`table.define(...)` is an alias for `table.schema(...)`. Each field
-definition may include:
+`table.define(...)` is an alias for `table.schema(...)`.
 
-| Key          | Effect                                                         |
-|--------------|------------------------------------------------------------------|
-| `type`        | Informational; not strictly enforced on every write               |
-| `required`    | Insert fails if the field is missing                               |
-| `unique`      | Creates a unique index; insert/update fails on duplicates          |
-| `index`       | Creates a (non-unique) index on this field                         |
-| `primary`     | Marks the field as a primary key                                   |
-| `min` / `max` | Numeric bounds                                                    |
-| `minLength` / `maxLength` | String length bounds                                   |
-| `ref`         | Informational reference to another table (not enforced/joined automatically) |
-| `enum`        | Array of allowed values                                            |
-| `default`     | Static default value, or `"$uuid"` / `"$now"` / `"$seq"` for generated defaults |
-| `onUpdate`    | e.g. `"now"` — refresh the field to the current time on every update |
+Supported field definition keys:
 
-`table.index(field(s), { unique? })` creates an index outside of `schema()`;
-`field(s)` can be a single field name or an array for a compound index.
+| Key | Description |
+|---|---|
+| `type` | `string`, `number`, `boolean`, `date`, `object`, `array`, `function`, or `any`. `bool` is accepted as an alias for `boolean`. Integer-like aliases are normalized to `number`. |
+| `required` | Reject records where the field is missing or nullish. |
+| `unique` | Enforce uniqueness and create a unique SQLite index. |
+| `index` | Create a non-unique SQLite index. |
+| `primary` | Make the field the canonical public identifier and enforce required uniqueness. |
+| `min` / `max` | Numeric value limits. |
+| `minLength` / `maxLength` | String length limits. |
+| `enum` | Restrict values to the listed values. |
+| `ref` | Store a table reference used by application code. |
+| `default` | Static value or generated `$uuid`, `$now`, or `$seq`. |
+| `onUpdate` | Generated update value such as `"$now"` on every update. |
 
-### Table methods — writing
+The field name `_id` is reserved by the database API. When a schema contains
+`id`, that field is the canonical public identifier. The exposed `_id` value is
+an alias of the same public identifier, not a second application identifier.
+Without a schema identifier field, `_id` is the automatically generated record
+identifier.
 
-| Method                          | Description                                          |
-|-----------------------------------|--------------------------------------------------------|
-| `table.insert(record)`             | Insert one record                                      |
-| `table.insertMany(records)`        | Insert an array of records                              |
-| `table.upsert(query, patch)`       | Update the first match, or insert `patch` if none match  |
-| `table.update(query, patch)`       | Update all matching records; `patch` may be a plain object of fields, or `{ $set: {...} }` |
-| `table.updateOne(query, patch)`    | Update only the first matching record                    |
-| `table.delete(query)`              | Delete all matching records                              |
-| `table.deleteOne(query)`           | Delete only the first matching record                     |
-| `table.deleteById(id)`             | Delete the record with the given `_id`                    |
-| `table.clear()`                    | Remove all records (keeps schema/indexes)                 |
-| `table.drop()`                     | Drop the table entirely, including schema/indexes         |
+Schema and index metadata are persisted inside the database and are restored
+when the table is reopened.
 
-### Table methods — reading
+### Writing data
 
-| Method                            | Description                                          |
-|-------------------------------------|--------------------------------------------------------|
-| `table.find(query?, options?)`       | Find matching records. `options`: `{ select, sort, orderBy, limit, offset, skip }` |
-| `table.findOne(query?)`              | First matching record, or `null`                        |
-| `table.findById(id)`                 | Record with the given `_id`, or `null`                   |
-| `table.count(query?)`                | Count matching records                                   |
-| `table.exists(query?)`               | True if at least one record matches                       |
-| `table.distinct(field, query?)`      | Array of distinct values of `field` among matches          |
-| `table.search(text, fields?)`        | Simple substring search across `fields` (all fields if omitted) |
-| `table.dump()`                       | Return every record, ignoring any filter                   |
-| `table.indexes()`                    | Array of `{ name, fields, unique }` for defined indexes     |
+| Method | Description |
+|---|---|
+| `table.insert(record)` | Insert one record, apply defaults, and validate the schema. |
+| `table.insertMany(records)` | Insert a complete batch atomically. Invalid input or a constraint failure rolls the whole batch back. |
+| `table.upsert(query, patch)` | Update the first match or insert a document composed from equality query fields and the patch. |
+| `table.update(query, patch)` | Update all matching records. Supports plain fields and `$set`, `$unset`, `$inc`, `$push`. |
+| `table.updateOne(query, patch)` | Update only the first matching record. |
+| `table.delete(query)` | Delete all matching records. |
+| `table.deleteOne(query)` | Delete only the first matching record. |
+| `table.deleteById(id)` | Delete the record identified by the schema's canonical identifier. |
+| `table.clear()` | Remove all records while keeping the schema and indexes. |
+| `table.drop()` | Drop the table, schema metadata, indexes, and records. |
 
-There is no `table.all()` — use `table.find()` with no arguments, or
-`table.dump()`, to get every record.
+All write operations propagate SQLite errors and preserve in-memory state when
+a write fails.
+
+### Reading data
+
+| Method | Description |
+|---|---|
+| `table.find(query?, options?)` | Find matching records. Options include `select`, `sort`, `orderBy`, `limit`, `offset`, and `skip`. |
+| `table.findOne(query?)` | Return the first matching record or `null`. |
+| `table.findById(id)` | Find a record by its canonical public identifier. |
+| `table.count(query?)` | Count matching records. |
+| `table.exists(query?)` | Return `true` when a matching record exists. |
+| `table.distinct(field, query?)` | Return type-aware distinct field values. |
+| `table.search(text, fields?)` | Case-insensitive substring search. |
+| `table.dump()` | Return all records. |
+| `table.indexes()` | Return persisted index definitions. |
+
+There is no `table.all()`. Use `table.find()` or `table.dump()`.
 
 ### Query builder
 
-`table.where(query)` returns a chainable query builder (as do `.select()`,
-`.orderBy()`, and `.limit()` called directly on the table, though those three
-start a fresh builder rather than adding to one):
+`table.where(query)`, `table.select(fields)`, `table.orderBy(field, direction?)`,
+and `table.limit(n)` return a chainable query builder.
 
 ```lx
-val topActive = users
+val activeAdults = users
   .where({ active: true })
   .and({ age: { $gte: 18 } })
   .orderBy("age", "desc")
   .limit(10)
-  .exec()
+  .find()
 ```
 
-| Method                     | Description                                    |
-|------------------------------|---------------------------------------------------|
-| `.where(query)`               | Set (or replace) the filter                         |
-| `.and(query)` / `.or(query)`  | Combine with the current filter using `$and`/`$or`   |
-| `.select(fields)`             | Project only the given fields                        |
-| `.orderBy(field, "asc"\|"desc"?)` | Add a sort key (can be called multiple times)   |
-| `.limit(n)`                   | Limit the number of results                           |
-| `.offset(n)` / `.skip(n)`     | Skip the first n results                               |
-| `.page(n, size)`              | Shorthand for `offset((n-1)*size).limit(size)`         |
-| `.exec()`                     | Run the query, return an array                         |
-| `.first()`                    | Run the query, return the first result or `null`        |
-| `.last()`                     | Run the query, return the last result or `null`          |
-| `.count()`                    | Count matches (ignores limit/offset)                     |
-| `.exists()`                   | True if any record matches                                |
-| `.update(patch)`              | Update all matching records                               |
-| `.delete()`                   | Delete all matching records                                |
+| Method | Description |
+|---|---|
+| `.where(query)` | Set or replace the filter. Supports an object filter or `(field, operator, value)`. |
+| `.and(query)` / `.or(query)` | Combine the current filter. |
+| `.select(fields)` | Project only the listed fields. |
+| `.orderBy(field, "asc"\|"desc"?)` | Add a sort key. |
+| `.limit(n)` | Limit results. `0` returns no records. |
+| `.offset(n)` / `.skip(n)` | Skip records. |
+| `.page(page, size)` | Apply page-based offset and limit. |
+| `.find()` | Execute and return an array. This matches `table.find(...)`. |
+| `.exec()` | Execute and return an array. Alias of `.find()`. |
+| `.first()` | Return the first result or `null`. |
+| `.last()` | Return the last result or `null`. |
+| `.count()` | Count matches. |
+| `.exists()` | Test whether a match exists. |
+| `.update(patch)` | Update all matches. |
+| `.delete()` | Delete all matches. |
 
-### Query filter operators
+### Filters
 
-Filters are plain objects. A bare value means equality; nested operator
-objects support:
+Filters use plain objects with equality values and Mongo-style operators:
 
 `$eq`, `$ne`, `$gt`, `$gte`, `$lt`, `$lte`, `$in`, `$nin`, `$like`, `$ilike`,
-`$regex`, `$exists`, `$between`, `$contains`, `$size`, `$type`,
-`$startsWith`, `$endsWith` — plus the boolean combinators `$and`, `$or`,
-`$not`, `$nor` at the top level of a filter.
+`$regex`, `$exists`, `$between`, `$contains`, `$size`, `$type`, `$startsWith`,
+`$endsWith`, plus `$and`, `$or`, `$not`, and `$nor`.
 
 ```lx
 users.find({ age: { $gte: 18, $lt: 65 }, name: { $startsWith: "A" } })
 users.find({ $or: [{ role: "admin" }, { role: "owner" }] })
+users.where("age", ">", 38).find()
+users.orderBy("age", "desc").where("age", ">=", 18).find()
 ```
+
+Three-argument `where(field, operator, value)` filters are translated to the
+same internal operator form used by object filters. Supported comparison
+operators are `=`, `==`, `!=`, `<>`, `>`, `>=`, `<`, `<=` and their `$eq`, `$ne`,
+`$gt`, `$gte`, `$lt`, and `$lte` forms. Invalid filter types and unsupported
+operators fail with an error instead of being treated as an unfiltered query.
 
 ### Aggregation
 
-`table.aggregate(pipeline)` runs a MongoDB-style aggregation pipeline (an
-array of stage objects) and returns an array of results. Supported stages:
-`$match`, `$sort`, `$limit`, `$skip`, `$project`, `$group`, `$unwind`,
-`$count`. Inside `$group`, accumulators `$count`, `$sum`, `$avg`, `$min`,
-`$max`, `$first`, `$last`, `$push`, and `$addToSet` are supported.
+`table.aggregate(pipeline)` supports `$match`, `$sort`, `$limit`, `$skip`,
+`$project`, `$group`, `$unwind`, and `$count`.
+
+`$group` supports `$count`, `$sum`, `$avg`, `$min`, `$max`, `$first`, `$last`,
+`$push`, and `$addToSet`. Group keys support the documented Mongo-style `_id`
+expression syntax.
 
 ```lx
 val byRole = users.aggregate([
   { $match: { active: true } }
-  { $group: { _id: "$role", total: { $count: {} } } }
+  { $group: { _id: "$role", total: { $count: {} }, averageAge: { $avg: "$age" } } }
 ])
 ```
 
-Simple aggregates also have dedicated shortcuts that don't require a
-pipeline: `table.sum(field, query?)`, `table.avg(field, query?)`,
-`table.min(field, query?)`, `table.max(field, query?)`.
+Dedicated aggregate helpers are also available:
+`table.sum(field, query?)`, `table.avg(field, query?)`, `table.min(field, query?)`,
+and `table.max(field, query?)`.
 
-> **Known limitation:** `table.join(...)` is currently a stub — it validates
-> its arguments but always returns an empty array. There is no cross-table
-> join support yet.
+### Joins
 
-### Change notifications
+`table.join(otherTable, localField, foreignField, options?)` performs an
+in-memory cross-table join and returns a new record array without modifying
+either table.
 
-`table.watch(query?, fn)` calls `fn(event, record)` whenever a matching
-record is inserted, updated, or deleted, and returns an `unwatch()`
-function to stop listening.
+```lx
+val orders = database.table("orders")
+val joined = orders.join(users, "userId", "id", { as: "user", type: "left", single: true })
+```
+
+`type` accepts `left` or `inner`. The default is `left`. `single: true` places
+one matching record or `null` in the joined field; otherwise the joined field
+contains an array.
 
 ### Transactions
 
-`database.transaction(fn)` calls `fn(database)` and returns its result.
-There is no automatic rollback on error — it is a convenience wrapper, not
-an atomic transaction guarantee.
+`database.transaction(fn)` executes the callback inside a real SQLite
+transaction. A callback error rolls the transaction back. A successful callback
+is committed atomically, and cached table state is refreshed after commit.
 
 ```lx
-val users = db.table("users")
-users.insert(struct { name = "Alice", email = "alice@example.com", age = 30 })
-users.insert(struct { name = "Bob",   email = "bob@example.com",   age = 25 })
-
-val alice = users.findOne(struct { email = "alice@example.com" })
-io.log(alice.name)  // Alice
-
-users.update(
-  struct { email = "alice@example.com" },
-  struct { age = 31 }
-)
-
-io.log("total:", users.count())
-io.table(users.find())
+val result = database.transaction(fn(tx) {
+  val accounts = tx.table("accounts")
+  accounts.update({ id: "a" }, { $inc: { balance: -100 } })
+  accounts.update({ id: "b" }, { $inc: { balance: 100 } })
+  "committed"
+})
 ```
 
----
+Nested transactions are rejected.
+
+### Indexes
+
+`table.index(field, { unique? })` creates a persistent SQLite index. Compound
+indexes can be created with an array of fields.
+
+```lx
+table.index("email", { unique: true })
+table.index(["tenantId", "createdAt"])
+```
+
+### Change notifications
+
+`table.watch(query?, fn)` registers a synchronous callback for matching insert,
+update, and delete events and returns an `unwatch()` function.
 
 ## `std.buffer` — Byte buffers
 
@@ -1142,7 +1428,7 @@ val buffer = @import("std.buffer")
 val buf = buffer.alloc(8)
 buf.writeU32(0, 4021, "be")
 buf.writeI16(4, -12, "be")
-io.log(buf.readU32(0, "be"))  // 4021
+io.log(buf.readU32(0, "be"))  
 io.log(buf.toHex())
 ```
 
@@ -1183,8 +1469,8 @@ silently on overflow instead of losing precision as plain `+`/`-`/`*` would
 past 2^53.
 
 ```lx
-ints.addU8(250, 10)   // 4   (250 + 10 wraps at 256)
-ints.subI8(-128, 1)   // 127 (wraps the other way)
+ints.addU8(250, 10)   
+ints.subI8(-128, 1)   
 ints.mulU32(200000, 200000)
 ```
 
@@ -1467,21 +1753,582 @@ accepted.
 ```lx
 val env = @import("std.env")
 ```
+The module provides access to environment variables. Native access is limited to the underlying operating-system and filesystem primitives exposed by ""std.os"" and ""std.fs"".
 
-| Function                   | Returns              | Description                                                        |
-|-----------------------------|-----------------------|---------------------------------------------------------------------|
-| `env.get(key)`               | string \| undefined  | Read variable; undefined if not set                                  |
-| `env.get(key, default)`      | string                | Read with a fallback default                                        |
-| `env.set(key, value)`        | —                     | Write an environment variable                                       |
-| `env.has(key)`                | boolean               | True if the variable is set                                         |
-| `env.delete(key)`             | —                     | Unset an environment variable                                       |
-| `env.all()`                    | object                | All environment variables as an object                              |
-| `env.load(path?)`              | boolean               | Load a `.env` file into the process environment (default: `.env`); `false` if the file can't be read |
-| `env.require(key)`             | string \| undefined  | Like `env.get`, but treats an empty string the same as unset         |
-| `env.int(key, default?)`       | number                | Parse as a number; `default` (or `0`) if unset or unparsable        |
-| `env.bool(key, default?)`      | boolean               | Parse as a boolean (`"true"`, `"1"`, `"yes"`, `"on"` are true); `default` (or `false`) if unset |
+The parser supports optional prefixes, keys composed of letters, digits, "_", "-", and ".", "=" or whitespace-sensitive ":" separators, unquoted values, single-quoted values, double-quoted values, backtick-quoted values, inline comments, empty values, and quoted multiline values. Double-quoted "\n" and "\r" sequences are converted to real line breaks.
+
+### API
+
+| Function | Returns | Description |
+|---|---|---|
+| `env.get(key)` | string \| undefined | Read an environment variable; returns `undefined` when it does not exist |
+| `env.get(key, default)` | value | Read a variable with an explicit fallback |
+| `env.has(key)` | boolean | Test whether the variable exists |
+| `env.set(key, value)` | boolean | Set a variable; returns `false` when the OS rejects the name or write |
+| `env.delete(key)` | boolean | Remove a variable; returns `false` when the OS rejects the name or operation |
+| `env.all()` | object | Snapshot of the process environment |
+| `env.parse(source)` | object | Parse dotenv source without modifying the process environment |
+| `env.populate(values, override?)` | object | Apply parsed values and return only the keys written; existing variables are preserved unless `override` is `true` |
+| `env.load(path?, override?)` | boolean | Read and parse a dotenv file, then populate the process environment |
+| `env.require(key)` | string | Return a required variable; throws `E0110` when the key does not exist |
+| `env.config(path?, override?)` | object | Load a dotenv file and return `{ parsed }` or `{ parsed, error }` |
+| `env.int(key, default?)` | number | Parse an environment value as a number |
+| `env.bool(key, default?)` | boolean | Parse `true`, `1`, `yes`, or `on` as `true` |
+
+`env.get(key)` and `env.require(key)` intentionally have different contracts.
+`get` is optional and returns `undefined` for a missing key; `require` is
+explicit and throws a formatted Lunex runtime diagnostic when a key is absent.
+An existing variable containing an empty string is still considered present.
+
+`env.set` and `env.delete` no longer hide operating-system errors. Their boolean
+result lets application code handle invalid names and failed environment
+operations explicitly.
+
+### Loading files
+
+```lx
+env.load()
+env.load(".env")
+env.load(".env.local")
+env.load(".env.local", true)
+```
+
+The default path is `.env`, and `override` defaults to `false`. This follows
+dotenv's normal non-overwrite population behavior; pass `true` when a later
+file must replace an already defined variable.
+
+### Application example
+
+```lx
+val env = @import("std.env")
+val io = @import("std.io")
+
+fn main() {
+  env.load()
+
+  val name = env.get("APP_NAME", "Lunex")
+  val port = env.get("PORT", "3000")
+  val debug = env.get("DEBUG", "false")
+
+  io.log(name)
+  io.log(port)
+  io.log(debug)
+}
+```
+
+### Parsing without loading
+
+```lx
+val parsed = env.parse("APP_NAME=Lunex\nPORT=3000\nDEBUG=true\n")
+env.populate(parsed)
+```
+
+### Required variables
+
+```lx
+val port = env.require("PORT")
+```
+
+A missing required key emits `E0110`. Empty values are not treated as missing.
+For code that should continue when a variable is absent, use `env.get(key,
+default)` instead.
+
+### Inspecting file errors
+
+```lx
+val result = env.config(".env")
+if result.error != undefined {
+  io.log(result.error.code)
+  io.log(result.error.message)
+}
+```
+
+`env.config` separates parsing/loading diagnostics from the boolean `env.load`
+API, which is useful when the application needs the parsed values and an
+explicit error object at the same time.
 
 ---
+
+## `std.ffi` — Native library interface
+
+```lx
+val ffi = @import("std.ffi")
+```
+
+`std.ffi` provides native shared-library access through an explicit ABI signature.
+Dynamic libraries are opened by the operating system, symbols are resolved by
+name, calls use the native ABI bridge, and native memory can be
+managed through Lunex pointer values.
+
+FFI is disabled by default. Enable it for a process from the Lunex command
+line:
+
+```bash
+lunex ffi = on run main.lx
+```
+
+The switch is process-local. It is not controlled by Lunex source code and
+there is no environment-variable override.
+
+### API
+
+| Function | Returns | Description |
+|---|---|---|
+| `ffi.enabled()` | boolean | Report whether FFI is enabled for the current process |
+| `ffi.load(path, options?)` | library | Open a native shared library |
+| `ffi.open(path, options?)` | library | Alias for `load` |
+| `ffi.bind(library, symbol, signature)` | function | Resolve and bind a native symbol to a typed callable |
+| `ffi.symbol(library, symbol)` | pointer | Resolve a symbol to its native address |
+| `ffi.call(target, args?)` | value | Call an existing bound function |
+| `ffi.call(pointer, signature, args)` | value | Call a native function pointer using an explicit signature |
+| `ffi.callback(signature, handler)` | pointer | Create a native callback that dispatches into Lunex |
+| `ffi.pointer(value?)` | pointer | Convert a native address or `std.buffer` value to a pointer |
+| `ffi.null()` | pointer | Return a null pointer |
+| `ffi.nullPtr()` | pointer | Identifier-safe alias for `ffi.null()` |
+| `ffi.isNull(pointer)` | boolean | Test whether a pointer is null |
+| `ffi.alloc(size)` | pointer | Allocate zero-initialized native memory |
+| `ffi.calloc(count, size)` | pointer | Allocate zero-initialized native memory using C `calloc` semantics |
+| `ffi.realloc(pointer, size)` | pointer | Resize an owned native allocation |
+| `ffi.free(pointer)` | boolean | Release an owned native allocation |
+| `ffi.cstring(value)` | pointer | Allocate a NUL-terminated native string |
+| `ffi.read(pointer, type, offset?)` | value | Read a typed value from native memory |
+| `ffi.write(pointer, type, value, offset?)` | undefined | Write a typed value to native memory |
+| `ffi.readBytes(pointer, length, offset?)` | array | Read raw bytes from native memory |
+| `ffi.writeBytes(pointer, data, offset?)` | undefined | Write bytes from a string, array, or `std.buffer` |
+| `ffi.readCString(pointer, maxLength?)` | string | Read a bounded NUL-terminated string |
+| `ffi.copy(destination, source, length)` | undefined | Copy native memory using the host C runtime |
+| `ffi.fill(pointer, value, length)` | undefined | Fill native memory with one byte value |
+| `ffi.close(library)` | boolean | Close a native library; live bindings keep it referenced until released |
+| `ffi.closeFunction(function)` | boolean | Release a bound native function and its library reference |
+| `ffi.name(function)` | string | Return the bound native symbol name |
+| `ffi.signature(function)` | string | Return the normalized ABI signature |
+| `ffi.sizeof(type)` | number | Return the native size of a type |
+| `ffi.alignof(type)` | number | Return the native alignment of a type |
+| `ffi.typeInfo(type)` | object | Return normalized type, size, alignment, pointer, array, and field metadata |
+
+Library values expose `path`, `bind`, `symbol`, `close`, `isClosed`, `handle`,
+and `active`. Pointer values expose `address`, `length`, `isNull`, `readCString`,
+`slice`, and `free`.
+
+### Platform support
+
+| Platform | FFI core | Native ABI | Dynamic libraries | Native callbacks |
+|---|---|---|---|---|
+| Linux | supported | System V AMD64, AAPCS64 | `.so` | supported by backend ABI |
+| Windows | supported | Win64, AAPCS64 | `.dll` | supported by backend ABI |
+| macOS | supported | System V AMD64, AAPCS64 | `.dylib` | supported by backend ABI |
+| Android arm64 | supported | AAPCS64 with Bionic | `.so` | backend-dependent |
+
+### Library loading
+
+The library path is passed directly to the host dynamic loader. Linux and
+Android commonly use `.so` libraries, while macOS uses `.dylib` libraries.
+Windows uses `.dll` libraries through the Windows loader. On Android arm64,
+the native loader uses the Bionic ABI and `libc.so` as the system C library.
+Common Linux SONAME spellings such as `libc.so.6` are normalized to their
+Android equivalents when necessary. Lunex Android arm64 builds use the Android Go
+target with `CGO_ENABLED=0`, position-independent executable mode, and the Bionic
+loader. The FFI backend uses goffi through the purego-compatible layer without
+requiring a C compiler.
+
+```lx
+val ffi = @import("std.ffi")
+
+fn main() {
+  val lib = ffi.load("libm.so.6", { global: false, lazy: false })
+  val sqrt = lib.bind("sqrt", "f64(f64)")
+  io.log(sqrt(81))
+  lib.close()
+}
+```
+
+`global` requests process-wide symbol visibility when the platform loader
+supports it. `lazy` selects lazy symbol relocation where supported. The
+portable default is eager, local loading.
+
+### Signatures
+
+Signatures use `returnType(argumentType, ...)` notation. A descriptor object is
+also accepted:
+
+```lx
+val strlen = lib.bind("strlen", "usize(cstring)")
+val add = lib.bind("add", { args: ["i32", "i32"], returns: "i32" })
+```
+
+Supported scalar types are `bool`, `i8`, `u8`, `i16`, `u16`, `i32`, `u32`,
+`i64`, `u64`, `isize`, `usize`, `intptr`, `uintptr`, `f32`, `f64`, `float`,
+`double`, and `string`.
+
+Pointer types use `ptr` or C-style `T*`. `char*` is represented as `cstring`.
+Common C spellings such as `size_t`, `ssize_t`, `ptrdiff_t`, `intptr_t`,
+`uintptr_t`, `short`, `unsigned int`, `long`, `unsigned long`, and fixed-width
+integer aliases are normalized to the corresponding ABI type. For integral
+FFI arguments, decimal or base-prefixed strings can be used when the full
+64-bit value cannot be represented exactly by a Lunex number.
+
+Fixed-size native arrays use `T[N]`. Structs use `struct{field:type,...}`:
+
+```lx
+val pairType = "struct{x:i32, y:f64}"
+val pairSize = ffi.sizeof(pairType)
+val pairAlign = ffi.alignof(pairType)
+```
+
+`ffi.typeInfo()` exposes the resulting field layout and native size so a
+binding can verify the declared ABI before the first call.
+
+### Strings and memory
+
+A `cstring` argument accepts a Lunex string, an FFI pointer, or null. Lunex
+strings passed as `cstring` arguments are copied into temporary NUL-terminated
+native storage for the duration of the call.
+
+```lx
+val text = ffi.cstring("Lunex")
+val n = strlen(text)
+io.log(n)
+ffi.free(text)
+```
+
+`ffi.alloc()` returns zero-initialized memory with a known length. Pointer
+bounds are checked when the pointer has a known allocation or buffer length;
+addresses with unknown bounds can still be used for operations whose requested
+size is explicit.
+
+`std.buffer` values can be passed to `ffi.pointer(buffer)` and to
+`ffi.writeBytes()` without first copying them into a separate Lunex array.
+
+### Callbacks
+
+Callbacks use the same signature syntax and keep their Lunex handler alive as
+long as the returned pointer remains reachable:
+
+```lx
+val onValue = ffi.callback("i32(i32)", fn(value) {
+  value * 2
+})
+```
+
+The callback pointer can be passed directly to native APIs expecting a function
+pointer. If a handler raises a Lunex error, the callback stores the last error
+text and returns the zero value for its declared return type; the native call
+itself cannot receive a Lunex exception object through a C ABI callback.
+
+### Raw function pointers
+
+A symbol can be resolved first and called later:
+
+```lx
+val address = ffi.symbol(lib, "strlen")
+val length = ffi.call(address, "usize(cstring)", ["hello"])
+```
+
+`ffi.call(pointer, signature, args)` always requires an explicit signature.
+This keeps the native ABI declaration at the call site instead of guessing it
+from a raw address.
+
+### Lifetime rules
+
+Native allocations returned by `alloc`, `calloc`, and `cstring` are owned by
+the returned pointer and should be released with `ffi.free(pointer)` or
+`pointer.free()`.
+
+A library remains open while bound functions reference it. Calling `library.close()`
+marks the library for closing and the handle is actually released after the
+last bound function is closed. `ffi.closeFunction()` releases that binding.
+
+A pointer returned by `ffi.symbol()` or `library.handle()` is borrowed and must
+not be passed to `ffi.free()`.
+
+---
+
+## `std.testing` — Lunex test support
+
+```lx
+val testing = @import("std.testing")
+```
+
+`std.testing` provides test registration, named groups, lifecycle hooks, parameterized cases, assertions, expected failures, retries, tags, assertion plans, deterministic snapshots, diagnostics, filtering, and structured results. The implementation is written in Lunex and uses standard library modules for host interaction.
+
+### API
+
+| Function | Returns | Description |
+|---|---|---|
+| `testing.test(name, body, options?)` | string | Register one test case |
+| `testing.cases(name, values, body, options?)` | number | Register one test for every value in an array |
+| `testing.group(name, body, options?)` | string | Register tests under a named group |
+| `testing.beforeAll(body)` | boolean | Register group setup that runs once before selected tests |
+| `testing.afterAll(body)` | boolean | Register group cleanup that runs after selected tests |
+| `testing.beforeEach(body)` | boolean | Register setup that runs before each selected test |
+| `testing.afterEach(body)` | boolean | Register cleanup that runs after each selected test |
+| `testing.ok(value, message?)` | boolean | Require a truthy value |
+| `testing.falsey(value, message?)` | boolean | Require a falsy value |
+| `testing.null(value, message?)` | boolean | Require a null value |
+| `testing.defined(value, message?)` | boolean | Require a value other than `undefined` |
+| `testing.equal(actual, expected, message?)` | boolean | Require deep value equality |
+| `testing.notEqual(actual, expected, message?)` | boolean | Require deep value inequality |
+| `testing.same(actual, expected, message?)` | boolean | Require matching types and deep equality |
+| `testing.contains(value, expected, message?)` | boolean | Require a string, array, or object to contain a value |
+| `testing.type(value, expected, message?)` | boolean | Require an exact Lunex value type |
+| `testing.length(value, expected, message?)` | boolean | Require an exact string or array length |
+| `testing.empty(value, message?)` | boolean | Require an empty string, array, object, `null`, or `undefined` |
+| `testing.approx(actual, expected, tolerance?, message?)` | boolean | Compare numbers with an absolute tolerance |
+| `testing.inRange(value, minimum, maximum, message?)` | boolean | Require an inclusive numeric range |
+| `testing.matchesPattern(value, pattern, message?)` | boolean | Require a string to match a regular expression |
+| `testing.raises(body, expected?, message?)` | value | Require a function to raise and optionally match its error |
+| `testing.notRaises(body, message?)` | boolean | Require a function not to raise |
+| `testing.fail(message?)` | never | Fail the active test immediately |
+| `testing.skip(reason?)` | never | Skip the active test without treating it as a failure |
+| `testing.todo(reason?)` | never | Mark the active test as an expected failure |
+| `testing.note(message)` | boolean | Attach diagnostic text to the active test |
+| `testing.plan(count)` | boolean | Require an exact assertion count |
+| `testing.snapshot(value, path, options?)` | boolean | Compare or update a deterministic snapshot file |
+| `testing.list()` | array | Inspect registered tests without executing them |
+| `testing.run(options?)` | object | Run selected tests and return structured results |
+| `testing.clear()` | boolean | Reset all tests, groups, hooks, and runner state |
+
+### Registration and groups
+
+```lx
+val testing = @import("std.testing")
+
+testing.group("math", fn() {
+  testing.test("addition", fn() {
+    testing.equal(2 + 3, 5)
+  })
+
+  testing.test("division", fn() {
+    testing.equal(12 / 3, 4)
+  })
+}, { tags: ["unit"] })
+
+fn main() {
+  val result = testing.run({ tags: ["unit"] })
+  if !result.ok {
+    throw result.failures
+  }
+}
+```
+
+Groups are scoped while their registration callback executes. Nested groups inherit parent tags and hook scopes. Test registration order remains deterministic.
+
+`testing.group` accepts either the classic two-argument form or a third options argument. The options currently support `tags`.
+
+`testing.test` options are `skip`, `todo`, `reason`, `tags`, `retries`, and `timeout`. `skip` and `todo` change the test status, `reason` supplies its explanation, `tags` adds selection metadata, `retries` bounds local retries, and `timeout` sets a post-execution duration budget.
+
+### Lifecycle
+
+```lx
+val testing = @import("std.testing")
+
+var opened = false
+
+testing.beforeAll(fn() {
+  opened = true
+})
+
+testing.beforeEach(fn() {
+  testing.ok(opened)
+})
+
+testing.afterEach(fn() {
+  testing.note("test cleanup completed")
+})
+testing.afterAll(fn() {
+  opened = false
+})
+
+testing.test("uses shared setup", fn() {
+  testing.ok(opened)
+})
+```
+
+`beforeAll` and `afterAll` run once for every group that has selected tests. `beforeEach` runs from parent group to child group. `afterEach` runs from child group to parent group and reverses hook registration order inside each group. Cleanup hooks still run when setup or the test body fails.
+
+A failing `beforeAll` blocks the affected group and its descendants. An `afterAll` failure is reported separately in `result.failures` and makes the overall run unsuccessful.
+
+### Parameterized cases
+
+```lx
+val testing = @import("std.testing")
+
+testing.cases("double", [1, 2, 3, 4], fn(value, index) {
+  testing.note("case " + str(index))
+  testing.equal(value * 2, (index + 1) * 2)
+})
+```
+
+`testing.cases` creates independent tests named with a stable numeric suffix. Each callback receives the case value and zero-based case index.
+
+### Assertions
+
+`testing.equal` performs recursive equality for arrays and objects and normalizes object key order during comparison. `testing.same` additionally requires matching Lunex value types. `testing.approx` is intended for floating-point calculations where exact equality is too strict. `testing.inRange` uses inclusive bounds.
+
+`testing.raises` accepts several forms of expectation. A string matches an error `code`, `name`, or a thrown primitive string. An object matches the supplied error fields deeply. A function receives the raised value and must return `true`.
+
+```lx
+testing.test("validation", fn() {
+  testing.plan(5)
+  testing.ok(8 > 2)
+  testing.falsey(false)
+  testing.null(null)
+  testing.defined("ready")
+  testing.approx(0.1 + 0.2, 0.3, 0.000001)
+})
+
+testing.test("invalid input", fn() {
+  val err = testing.raises(fn() {
+    throw { code: "E_INPUT", name: "InputError", message: "bad value" }
+  }, { code: "E_INPUT", name: "InputError" })
+  testing.equal(err.code, "E_INPUT")
+  testing.matchesPattern(err.message, "bad")
+})
+```
+
+Every public assertion increments the active test assertion count. `testing.plan(count)` detects missing or extra assertions before a test can pass. The plan itself does not count as an assertion.
+
+Assertion failures raise an object containing `name`, `code`, `message`, `actual`, and `expected`. Assertion failures use `E_ASSERT`. Assertion-plan failures use `E_PLAN`.
+
+### Skips and expected failures
+
+Registration-time control keeps collection separate from execution:
+
+```lx
+testing.test("platform-only", fn() {
+  testing.fail("not executed")
+}, { skip: true, reason: "requires target platform" })
+
+testing.test("future behavior", fn() {
+  testing.fail("pending")
+}, { todo: true, reason: "pending implementation" })
+```
+
+Runtime control is also available:
+
+```lx
+val supported = false
+
+testing.test("conditional support", fn() {
+  if !supported {
+    testing.skip("feature is unavailable")
+  }
+  testing.ok(true)
+})
+```
+
+A skipped test is never executed. A todo test that fails is counted as expected. A todo test that passes is an unexpected pass and fails the run.
+
+### Retries and flakiness
+
+```lx
+testing.test("eventually stable", fn() {
+  testing.equal(loadValue(), 42)
+}, { retries: 2 })
+```
+
+Retries are explicit and bounded. A test that passes only after retry is reported as `flaky` instead of being silently treated like a clean first-attempt pass. Use `failOnFlaky: true` in `testing.run` when CI should reject that result.
+
+The runner is deterministic by default: tests execute in registration order, no implicit randomization is performed, and retries are bounded by the declared count.
+
+### Tags and selection
+
+```lx
+testing.group("database", fn() {
+  testing.test("insert", fn() {
+    testing.ok(true)
+  })
+}, { tags: ["integration", "slow"] })
+
+testing.test("fast unit", fn() {
+  testing.ok(true)
+}, { tags: ["unit", "fast"] })
+
+val result = testing.run({
+  tags: ["unit"],
+  excludeTags: ["slow"],
+  filter: "fast"
+})
+```
+
+`tags` requires every requested tag. `excludeTags` removes any matching tag. `filter` selects tests whose full group and test name contains the supplied text. Selection happens before test execution, so unselected tests do not run hooks.
+
+### Snapshots
+
+```lx
+val data = { name: "Lunex", values: [1, 2, 3] }
+
+testing.test("stable output", fn() {
+  testing.snapshot(data, "snapshots/data.snap")
+})
+```
+
+Snapshot serialization is deterministic for strings, numbers, booleans, `null`, arrays, and objects. Object keys are sorted before serialization. A missing or different snapshot fails the test.
+
+To intentionally create or refresh a snapshot, use:
+
+```lx
+testing.snapshot(data, "snapshots/data.snap", { update: true })
+```
+
+Snapshot files are ordinary text files, so they can be reviewed and committed with the project. Snapshot updates are explicit and never happen during normal verification.
+
+### Diagnostics and results
+
+```lx
+testing.test("parser", fn() {
+  testing.note("checking nested expression")
+  testing.equal(parseThing(), expected)
+})
+
+val result = testing.run({ retries: 1, failOnFlaky: true })
+
+if !result.ok {
+  each failure in result.failures {
+    io.log(failure.test, failure.error)
+  }
+}
+```
+
+`testing.note` stores diagnostic text on the current test. It does not affect the result.
+
+Each entry in `result.results` contains the test name, group, tags, status, elapsed time, attempt count, flakiness state, assertion count, assertion plan, notes, setup error, cleanup error, and captured error value.
+
+The top-level result contains:
+
+| Field | Description |
+|---|---|
+| `total` | Selected tests considered by the run |
+| `passed` | Tests that passed without being todo cases |
+| `failed` | Tests that failed or were rejected by `failOnFlaky` |
+| `skipped` | Tests skipped before or during execution |
+| `todo` | Expected-failure tests that did not unexpectedly pass |
+| `unexpected` | Todo tests that passed unexpectedly |
+| `flaky` | Tests that passed only after a retry |
+| `duration` | Sum of executed test durations in milliseconds |
+| `ok` | Overall success state |
+| `stopped` | Whether `failFast` stopped further execution |
+| `failures` | Structured failure entries |
+| `results` | Per-test execution records |
+| `afterAllError` | Final cleanup error, when any group cleanup failed |
+
+### Runner options
+
+| Option | Type | Description |
+|---|---|---|
+| `filter` | string | Select tests by full-name substring |
+| `tags` | string or array | Require every requested tag |
+| `excludeTags` | string or array | Exclude tests carrying any listed tag |
+| `failFast` | boolean | Stop after the first unsuccessful result |
+| `quiet` | boolean | Suppress per-test output and keep the summary silent |
+| `failOnFlaky` | boolean | Convert a retry-passing flaky test into a failure |
+| `retries` | number | Default retry count for tests without a local value |
+
+The `timeout` test option is a duration budget. The runner measures the completed execution and reports `E_TIMEOUT` when the budget is exceeded. It does not forcibly interrupt code that is still executing.
+
+### Resetting state
+
+`testing.clear()` removes registered tests, groups, lifecycle hooks, and runner state. This makes repeated test runs in the same Lunex process isolated from previous registrations.
 
 ## `runtime` — Runtime introspection
 

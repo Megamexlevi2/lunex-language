@@ -13,6 +13,8 @@ Always available, no installation and no `lunex.toml` entry required:
 ```lx
 val io     = @import("std.io")
 val http   = @import("std.http")
+val router = @import("std.http.router")
+val files  = @import("std.http.static")
 val fs     = @import("std.fs")
 val crypto = @import("std.crypto")
 val math   = @import("std.math")
@@ -25,6 +27,7 @@ val env    = @import("std.env")
 val ws     = @import("std.ws")
 val jwt    = @import("std.jwt")
 val json   = @import("std.json")
+val ffi    = @import("std.ffi")
 val buffer = @import("std.buffer")
 val ints   = @import("std.ints")
 val runtime = @import("runtime")
@@ -43,12 +46,10 @@ val mylib  = @fimport("./mylib.nax")
 val shared = @fimport("../shared/utils.nax")
 ```
 
-A `.nax` file is a compiled Lunex archive produced by `lunex build`. It
-bundles one or more `.lx` source files with their compiled bytecode into a
-single binary archive:
+A `.nax` file is a compiled Lunex archive produced by `lunex pack`. In the default mode it bundles the selected module and every local `@fimport` dependency as `.nlo` compiled objects inside a single binary archive:
 
 ```bash
-lunex build math.lx -o math.nax
+lunex pack math.lx -o math.nax
 ```
 
 ```lx
@@ -91,46 +92,40 @@ repository = "https://github.com/user/my-app"
 entry = "main.lx"
 
 [lunex]
-min_version = "0.9.2"
+min_version = "0.9.3"
 max_version = "1.x"
 
-# GitHub repository, default branch or a tag/range in `version`
 [libraries.http_client]
 url = "https://github.com/user/http-client"
 version = "1.4.0"
 
-# Always resolve to the newest tag
 [libraries.logger]
 url = "https://github.com/user/logger"
 version = "latest"
 
-# A specific GitHub release, downloaded as a release asset
 [libraries.database]
 source = "github-release"
 url = "https://github.com/user/database"
 release = "v2.1.0"
 
-# Only a subdirectory of the repository
 [libraries.ui]
 source = "github"
 url = "https://github.com/user/framework"
 path = "modules/ui"
 version = "0.5.0"
 
-# A version range
 [libraries.auth]
 url = "https://github.com/user/auth"
 version = ">=1.0.0 <2.0.0"
 
-# A path on disk instead of a remote source
 [libraries.test]
 source = "local"
 path = "./modules/test"
 ```
 
 Standard library modules (`std.io`, `std.http`, `std.fs`, `std.crypto`,
-`std.db`, `std.os`, `std.regex`, `std.utils`, `std.datetime`, `std.env`,
-`std.ws`, `std.jwt`, `std.math`, `std.json`, `std.buffer`, `std.ints`, and
+`std.db`, `std.os`, `std.regex`, `std.utils`, `std.datetime`, `std.env`, `std.ffi`,
+`std.testing`, `std.ws`, `std.jwt`, `std.math`, `std.json`, `std.buffer`, `std.ints`, and
 `runtime`) never need a `[libraries.*]` entry.
 
 ### `lunex.lock`
@@ -141,7 +136,7 @@ version = "1.3.2"
 hash = "sha256:..."
 source = "github:user/logger"
 url = "https://github.com/user/logger"
-# commit = "..."   # present only when the resolved install is pinned to a commit
+
 ```
 
 Don't edit `lunex.lock` by hand — it's regenerated on every install.
@@ -163,9 +158,9 @@ without conflict.
 Resolution checks the local store first, then the global store.
 
 ```bash
-lunex install -g https://github.com/user/logger         # global, latest
-lunex install -g https://github.com/user/logger@1.3.2   # global, pinned
-lunex install -l https://github.com/user/logger         # local to this project only
+lunex install -g https://github.com/user/logger
+lunex install -g https://github.com/user/logger@1.3.2
+lunex install -l https://github.com/user/logger
 ```
 
 `-g`/`-l` installs work without a `lunex.toml` at all — useful for a quick
@@ -184,8 +179,8 @@ the local store, and writes `lunex.lock`.
 ### Adding a new dependency
 
 ```bash
-lunex add https://github.com/user/repo            # latest
-lunex add https://github.com/user/repo@v1.2.3      # specific version
+lunex add https://github.com/user/repo
+lunex add https://github.com/user/repo@v1.2.3
 ```
 
 Adds a `[libraries.*]` entry to `lunex.toml` and installs it locally in
@@ -194,10 +189,10 @@ the same step.
 ### Managing installed libraries
 
 ```bash
-lunex list              # installed libraries, with scope (local/global)
-lunex remove logger      # remove a library from both stores
-lunex update             # re-resolve every library against lunex.toml
-lunex update logger      # re-resolve one library
+lunex list
+lunex remove logger
+lunex update
+lunex update logger
 ```
 
 ---
@@ -228,10 +223,9 @@ hint: library "pkg-name" not found — add it to lunex.toml with:
 
 ## `.nax` File Format
 
-A `.nax` file is a custom binary format — not a zip or tar archive, and not
-readable by standard archive tools. Only the Lunex runtime can read it. It
-stores compiled bytecode chunks, embedded source text for debugging, and a
-module export table.
+A `.nax` file is a custom binary container, not a zip or tar archive. Only the Lunex runtime can read it. In optimized mode it stores compiled `.nlo` objects and module metadata without storing the original source text.
+
+The `.nlo` format is separate from the legacy `x102c` object format. It stores a validated compiled AST in binary form and does not contain the legacy NTZ bytecode section. Optimized NLO objects omit plaintext source and are lazily decoded by the NAX runtime. `lunex unpack` can reconstruct canonical `.lx` source from the stored AST.
 
 ```bash
 lunex run mylib.nax
@@ -242,8 +236,8 @@ lunex run mylib.nax
 ## Running and Debugging a Project
 
 ```bash
-lunex start              # run the entry point declared in lunex.toml
-lunex debug main.lx      # show every compile error, then run with a full trace
+lunex start
+lunex debug main.lx
 ```
 
 `lunex debug` compiles with complete diagnostics (not just the first
@@ -310,7 +304,7 @@ shims it registered.
 ```bash
 lunex init my-app
 cd my-app
-lunex add https://github.com/Megamexlevi2/lune-xml
+lunex add https://github.com/Megamexlevi2/lunex-language/lune-xml
 lunex install
 ```
 
@@ -327,3 +321,11 @@ fn main() {
 ```bash
 lunex start
 ```
+
+## Pack mode
+
+The default `lunex pack` mode stores a validated, resolver-ready binary AST in an NLO object inside the NAX archive. NAX execution skips source reading, lexing, parsing, and resolution, uses lazy standard-library initialization, and avoids repeated top-level validation for trusted optimized objects. This reduces startup work compared with executing the same `.lx` file directly, without CGo and without adding a new execution backend. The runtime still uses the existing Go interpreter.
+
+The `--source` option preserves the original `.lx` files in the NAX archive for source-first recovery. Optimized NLO objects can also recover canonical Lunex source from their stored AST without embedding the original source text.
+
+`lunex pack <file.lx|directory>` uses the `.nlo` compiled-object representation by default. The default archive does not store source text and does not use the legacy `x102c` object format. Use `--source` to preserve source files. `lunex unpack` extracts the entries stored in either representation.

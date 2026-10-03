@@ -1,24 +1,22 @@
 val io   = @import("std.io")
 val http = @import("std.http")
 
-fn main() {
-  val server = http.createServer(fn(req, res) {
-    if req.url == "/" {
-      http.text(res, "Hello from Lunex!", 200)
-    } else if req.url == "/ping" {
-      http.json(res, struct { status = "ok" }, 200)
-    } else if req.url == "/echo" {
-      http.json(res, struct {
-        url    = req.url
-        method = req.method
-      }, 200)
-    } else {
-      http.json(res, struct { error = "not found" }, 404)
-    }
-  })
+fn handle(req, res) {
+  if req.path == "/" {
+    res.text("Hello from Lunex!")
+  } elif req.path == "/ping" {
+    res.json({ status: "ok" })
+  } elif req.path == "/echo" {
+    res.json({ url: req.url, method: req.method })
+  } else {
+    res.json({ error: "not found" }, 404)
+  }
+}
 
-  http.listen(server, 3000, "0.0.0.0", fn() {
-    io.log(io.green("Server listening on http://localhost:3000"))
+fn main() {
+  val server = http.createServer(handle)
+  server.listen(3000, "0.0.0.0", fn(port) {
+    io.log(io.green("Server listening on http://localhost:" + str(port)))
     io.log("  GET /       -> text response")
     io.log("  GET /ping   -> json { status: ok }")
     io.log("  GET /echo   -> echo request info")

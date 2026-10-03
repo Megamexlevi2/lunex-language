@@ -40,3 +40,7 @@ func SetCacheDir(dir string) error {
 func UnpackNAX(data []byte, outDir string) (int, error) {
 	return unpackNAXData(data, outDir)
 }
+
+func RecoverNAX(data []byte, outDir string) (int, error) {
+	return recoverNAXData(data, outDir)
+}

@@ -1,0 +1,32 @@
+val io = @import("std.io")
+val os = @import("std.os")
+val ffi = @import("std.ffi")
+
+fn check(condition, message) {
+  if !condition {
+    throw "FAIL " + message
+  }
+}
+
+fn runAndroid() {
+  check(ffi.enabled(), "FFI was not enabled for Android")
+  val libc = ffi.load("libc.so")
+  check(libc.path == "libc.so", "Android libc path mismatch")
+  val getpid = libc.bind("getpid", "i32()")
+  val pid = getpid()
+  check(pid > 0, "Android getpid call failed")
+  val strlen = libc.bind("strlen", "usize(cstring)")
+  check(strlen("Android Lunex") == 13, "Android strlen call failed")
+  check(ffi.close(getpid), "Android getpid close failed")
+  check(ffi.close(strlen), "Android strlen close failed")
+  check(ffi.close(libc), "Android libc close failed")
+  io.log("PASS ffi_android")
+}
+
+fn main() {
+  if os.platform() == "android" {
+    runAndroid()
+  } else {
+    io.log("PASS ffi_android_not_applicable")
+  }
+}

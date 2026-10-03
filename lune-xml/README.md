@@ -9,8 +9,8 @@ XML module for the [Lunex](https://github.com/Megamexlevi2) programming language
 Copy the `lune-xml` folder into your project and import:
 
 ```lx
-val xml = @fimport("./lune-xml/main.nax")   // compiled bundle (recommended)
-val xml = @fimport("./lune-xml/main.lx")    // source
+val xml = @fimport("./lune-xml/main.nax")   
+val xml = @fimport("./lune-xml/main.lx")    
 ```
 
 ---
@@ -27,11 +27,11 @@ val io  = @import("std.io")
 val xml = @fimport("./lune-xml/main.nax")
 
 fn main() {
-  // xml.tag(name)              → empty element
-  // xml.tag(name, text)        → element with text
-  // xml.set(node, key, value)  → set one attribute, returns node
-  // xml.add(parent, ...)       → append children, returns parent
-  // xml.toString(root)         → serialize to XML string
+  
+  
+  
+  
+  
 
   val title  = xml.tag("title", "Lunex Programming")
   val author = xml.tag("author", "David Dev")
@@ -63,12 +63,12 @@ Output:
 fn main() {
   val src = "<users><user id=\"42\"><name>Alice</name></user></users>"
 
-  val doc  = xml.fromString(src)        // parse
-  val user = xml.find(doc, "user")      // first <user> anywhere
+  val doc  = xml.fromString(src)        
+  val user = xml.find(doc, "user")      
   val name = xml.find(doc, "name")
 
-  io.log(xml.get(name))                 // → Alice
-  io.log(xml.attr(user, "id"))          // → 42
+  io.log(xml.get(name))                 
+  io.log(xml.attr(user, "id"))          
 }
 ```
 
@@ -76,7 +76,7 @@ fn main() {
 
 ```lx
 val img = xml.setAll(xml.tag("img"), { src: "photo.png", alt: "photo" })
-// → <img alt="photo" src="photo.png" />
+
 ```
 
 ### Find all matching elements
@@ -143,9 +143,9 @@ Methods on any node:
 ```lx
 val n = xml.createElement("div")
 n.setAttribute("class", "box")
-io.log(n.getAttribute("class"))  // → box
-io.log(n.hasAttr("id"))          // → false
-io.log(n.childCount())           // → 0
+io.log(n.getAttribute("class"))  
+io.log(n.hasAttr("id"))          
+io.log(n.childCount())           
 ```
 
 ---
@@ -164,7 +164,7 @@ Creates an element with text content.
 
 ```lx
 val title = xml.createTextElement("title", "Hello World")
-// → <title>Hello World</title>
+
 ```
 
 #### `xml.createElementWithAttrs(tag, attrs)` → node
@@ -174,7 +174,7 @@ alphabetically for deterministic output. Use
 
 ```lx
 val img = xml.createElementWithAttrs("img", { src: "photo.png", alt: "photo" })
-// → <img alt="photo" src="photo.png" />
+
 ```
 
 #### `xml.createElementWithAttrPairs(tag, pairs)` → node
@@ -183,7 +183,7 @@ Like `createElementWithAttrs`, but takes an ordered array of
 
 ```lx
 val img = xml.createElementWithAttrPairs("img", [["src", "photo.png"], ["alt", "photo"]])
-// → <img src="photo.png" alt="photo" />
+
 ```
 
 #### `xml.createCDataElement(tag, text)` → node
@@ -192,7 +192,7 @@ for embedding SQL, JSON, HTML, or other markup-like content.
 
 ```lx
 val sql = xml.createCDataElement("query", "SELECT * FROM users WHERE age > 18")
-// → <query><![CDATA[SELECT * FROM users WHERE age > 18]]></query>
+
 ```
 
 #### `xml.appendChild(node, child)`
@@ -226,8 +226,8 @@ comments, DOCTYPE, and `<![CDATA[ ]]>` sections.
 
 ```lx
 val doc = xml.parse("<users><user id=\"1\"><name>Alice</name></user></users>")
-io.log(doc.tag)          // → users
-io.log(doc.childCount()) // → 1
+io.log(doc.tag)          
+io.log(doc.childCount()) 
 ```
 
 ---
@@ -319,7 +319,7 @@ val node = xml.fromObject("config", {
   host: "localhost"
   port: "3000"
 })
-// → <config><host>localhost</host><port>3000</port></config>
+
 ```
 
 ---

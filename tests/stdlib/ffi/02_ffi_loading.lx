@@ -1,0 +1,51 @@
+val io = @import("std.io")
+val ffi = @import("std.ffi")
+
+fn check(condition, message) {
+  if !condition {
+    throw "FAIL " + message
+  }
+}
+
+fn main() {
+  check(ffi.enabled(), "FFI was not enabled for the test process")
+
+  val candidates = [
+    "libc.so",
+    "libc.so.6",
+    "/usr/lib/libSystem.B.dylib",
+    "msvcrt.dll",
+    "ucrtbase.dll"
+  ]
+  var lib = undefined
+
+  each path in candidates {
+    if lib == undefined {
+      try {
+        lib = ffi.open(path)
+      } catch (err) {
+      }
+    }
+  }
+
+  check(lib != undefined, "a system C library could not be loaded")
+  check(lib.path != undefined, "library path is missing")
+  check(lib.handle().isNull() == false, "library handle is null")
+
+  val strlen = lib.bind("strlen", "usize(cstring)")
+  check(ffi.name(strlen) == "strlen", "function name mismatch")
+  check(ffi.signature(strlen) == "usize(cstring)", "function signature mismatch")
+  check(strlen("Lunex FFI") == 9, "strlen call returned an unexpected value")
+  check(ffi.call(strlen, ["native call"]) == 11, "ffi.call returned an unexpected value")
+  check(lib.active() == 1, "library binding count mismatch")
+
+  val symbol = lib.symbol("strlen")
+  check(!symbol.isNull(), "strlen symbol is null")
+  check(ffi.call(symbol, "usize(cstring)", ["pointer call"]) == 12, "function pointer call failed")
+
+  check(ffi.close(strlen), "function close failed")
+  check(lib.active() == 0, "library binding count did not reach zero")
+  check(ffi.close(lib), "library close failed")
+  check(lib.isClosed(), "library did not close")
+  io.log("PASS ffi_loading")
+}

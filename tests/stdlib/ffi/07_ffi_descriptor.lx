@@ -1,0 +1,30 @@
+val io = @import("std.io")
+val ffi = @import("std.ffi")
+
+fn check(condition, message) {
+  if !condition {
+    throw "FAIL " + message
+  }
+}
+
+fn main() {
+  val candidates = ["libc.so", "libc.so.6", "/usr/lib/libSystem.B.dylib", "msvcrt.dll", "ucrtbase.dll"]
+  var lib = undefined
+
+  each path in candidates {
+    if lib == undefined {
+      try {
+        lib = ffi.load(path)
+      } catch (err) {
+      }
+    }
+  }
+
+  check(lib != undefined, "a system C library could not be loaded")
+  val strlen = lib.bind("strlen", { args: ["cstring"], returns: "usize" })
+  check(strlen("descriptor") == 10, "descriptor signature call failed")
+  check(ffi.signature(strlen) == "usize(cstring)", "descriptor normalization failed")
+  check(ffi.close(strlen), "descriptor function close failed")
+  check(ffi.close(lib), "descriptor library close failed")
+  io.log("PASS ffi_descriptor")
+}

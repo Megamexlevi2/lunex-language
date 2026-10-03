@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"lunex/internal/ast"
+	"lunex/internal/errfmt"
 	"math"
 	"strings"
 	"sync"
@@ -19,6 +20,25 @@ func (e *throwError) Error() string {
 		return e.val.ToString()
 	}
 	return "thrown"
+}
+
+func (e *throwError) DiagnosticError() *errfmt.LunexError {
+	if e == nil || e.val == nil || e.val.Tag != TypeObject {
+		return nil
+	}
+	codeVal, ok := e.val.ObjVal["code"]
+	if !ok {
+		return nil
+	}
+	code := codeVal.ToString()
+	if _, ok := errfmt.LookupCode(code); !ok {
+		return nil
+	}
+	message := e.Error()
+	if message == "" {
+		return nil
+	}
+	return errfmt.New(errfmt.KindRuntime, code, message, "", 0, 0, nil)
 }
 func (e *breakError) Error() string    { return "break" }
 func (e *continueError) Error() string { return "continue" }

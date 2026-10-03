@@ -492,7 +492,7 @@ type Function struct {
 	Body         interface{}
 	Env          *Environment
 	Native       func(args []*Value, this *Value) (*Value, error)
-	JITTier      int
+	NativeTier      int
 	CallCount    int64
 	DefClass     *Class
 	IsArrow      bool

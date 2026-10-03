@@ -1,52 +1,84 @@
-val http = @import("std.http")
-val io   = @import("std.io")
+val http   = @import("std.http")
+val router = @import("std.http.router")
+val io     = @import("std.io")
 
 val port = 3000
 
-fn makeUser(id, name, role) {
-  struct {
-    id   = id
-    name = name
-    role = role
+var users = [
+  { id: 1, name: "Alice", role: "admin" },
+  { id: 2, name: "Bob",   role: "user" },
+  { id: 3, name: "Carol", role: "user" }
+]
+var nextId = 4
+
+fn findUser(id) {
+  var found = null
+  each user in users {
+    if str(user.id) == id {
+      found = user
+    }
   }
+  found
 }
 
-val users = [
-  makeUser(1, "Alice", "admin"),
-  makeUser(2, "Bob",   "user"),
-  makeUser(3, "Carol", "user")
-]
-
-val server = http.createServer(fn(req, res) {
-  if req.method == "GET" and req.url == "/" {
-    http.json(res, struct {
-      message = "Lunex REST Server"
-      version = "1.0"
-    }, 200)
-
-  } else if req.method == "GET" and req.url == "/users" {
-    http.json(res, struct {
-      users = users
-      total = len(users)
-    }, 200)
-
-  } else if req.method == "GET" and req.url == "/health" {
-    http.json(res, struct {
-      status = "ok"
-    }, 200)
-
-  } else {
-    http.json(res, struct {
-      error = "not found"
-    }, 404)
+fn requireUser(id) {
+  val user = findUser(id)
+  if user == null {
+    throw http.error(404, "user not found", "E_USER_NOT_FOUND")
   }
-})
+  user
+}
+
+fn info(req, res) {
+  res.json({ message: "Lunex REST Server", version: "1.0" })
+}
+
+fn health(req, res) {
+  res.json({ status: "ok" })
+}
+
+fn listUsers(req, res) {
+  res.json({ users: users, total: users.length })
+}
+
+fn showUser(req, res) {
+  res.json(requireUser(req.params.id))
+}
+
+fn createUser(req, res) {
+  val body = req.json()
+  if typeof(body.name) != "string" || body.name == "" {
+    throw http.error(422, "name is required", "E_USER_INVALID")
+  }
+  val user = { id: nextId, name: body.name, role: "user" }
+  nextId = nextId + 1
+  users.push(user)
+  res.json(user, 201)
+}
+
+fn removeUser(req, res) {
+  val user = requireUser(req.params.id)
+  users = users.filter(fn(item) { item.id != user.id })
+  res.end("", 204)
+}
+
+val api = router.create([
+  router.get("/", info),
+  router.get("/health", health),
+  router.get("/users", listUsers),
+  router.get("/users/:id", showUser),
+  router.post("/users", createUser),
+  router.delete("/users/:id", removeUser)
+])
 
 fn main() {
-  http.listen(server, port, "0.0.0.0", fn() {
-    io.log(io.green("Server running on http://localhost:" + str(port)))
-    io.log("  GET /         -> server info")
-    io.log("  GET /users    -> list users")
-    io.log("  GET /health   -> health check")
+  api.listen(port, "0.0.0.0", fn(actual) {
+    io.log(io.green("Server running on http://localhost:" + str(actual)))
+    io.log("  GET    /            -> server info")
+    io.log("  GET    /health      -> health check")
+    io.log("  GET    /users       -> list users")
+    io.log("  GET    /users/:id   -> show a user")
+    io.log("  POST   /users       -> create a user (JSON body with name)")
+    io.log("  DELETE /users/:id   -> delete a user")
   })
 }

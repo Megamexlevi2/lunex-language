@@ -9,25 +9,11 @@ import (
 	"time"
 )
 
-// pseudoThisName and pseudoSuperClassName mirror the same-named
-// unexported constants in internal/resolver/function.go: the synthetic
-// binding names reserved as the first two slots of every resolved
-// function frame.
 const (
 	pseudoThisName       = "this"
 	pseudoSuperClassName = "__super_class__"
 )
 
-// pseudoBindingSlot returns the slot index of a pseudo-binding
-// (this/__super_class__) within bodyNode's resolved frame, or -1 if the
-// frame wasn't resolved or doesn't declare that name. resolveMethodLike
-// always declares "this" and "__super_class__" as the first two names of
-// any resolved function frame (see internal/resolver/function.go), but
-// looking them up by name here -- rather than hard-coding slots 0/1 --
-// means this stays correct even if that ordering ever changes, and
-// degrades safely (returns -1, a guaranteed out-of-range index that
-// DefineSlot's bounds check silently ignores) for any frame the resolver
-// didn't annotate.
 func pseudoBindingSlot(bodyNode *ast.Node, name string) int {
 	if bodyNode == nil || bodyNode.ScopeInfo == nil {
 		return -1
@@ -286,14 +272,7 @@ func (interp *Interpreter) callUserFunction(fn *Function, args []*Value, thisVal
 	if fn.IsArrow && fn.CapturedThis != nil {
 		effectiveThis = fn.CapturedThis
 	}
-	// `this` and `__super_class__` are always reserved at slots 0 and 1
-	// respectively when this frame was resolved (see
-	// resolver.resolveMethodLike's binding order) -- write through the
-	// slot API so identifier references to `this` inside the body hit
-	// the fast path too, falling back to a plain Define when this frame
-	// wasn't resolved (ScopeInfo nil, slots is nil, DefineSlot's bounds
-	// check makes the slot write a no-op and it behaves exactly like
-	// Define).
+
 	if effectiveThis != nil {
 		fnEnv.DefineSlot(0, pseudoBindingSlot(bodyNode, pseudoThisName), "this", effectiveThis, false)
 	}
@@ -315,12 +294,14 @@ func (interp *Interpreter) callUserFunction(fn *Function, args []*Value, thisVal
 				if _, already := fnEnv.GetLocal(stmt.Name); !already {
 					MarkEscaped(fnEnv)
 					fn := &Function{
-						Name:   stmt.Name,
-						Params: paramsToFnParams(stmt.Params),
-						Body:   stmt.Body,
-						Env:    fnEnv,
+						Name:        stmt.Name,
+						Params:      paramsToFnParams(stmt.Params),
+						Body:        stmt.Body,
+						Env:         fnEnv,
+						SourceFile:  interp.filename,
+						SourceLines: interp.sourceLines,
 					}
-					fnEnv.Define(stmt.Name, FuncVal(fn), false)
+					fnEnv.DefineSlot(0, pseudoBindingSlot(bodyNode, stmt.Name), stmt.Name, FuncVal(fn), false)
 				}
 			}
 		}

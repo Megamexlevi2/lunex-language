@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"lunex/internal/ast"
 )
 
 var useSelfHosted = false
@@ -16,6 +17,8 @@ var x102Magic = [5]byte{'x', '1', '0', '2', 'c'}
 
 const x96Version uint16 = 0x0600
 const x102HeaderSize = 32
+const x102FlagSource = byte(0x01)
+const x102FlagAST = byte(0x04)
 
 var legacyObjectMagic = [4]byte{'n', 't', 'l', 'i'}
 
@@ -127,6 +130,22 @@ func decodeX96Object(data []byte) (*Chunk, error) {
 	if err != nil {
 		return nil, err
 	}
+	flags := data[7]
+	var tree *ast.Node
+	if flags&x102FlagAST != 0 {
+		astLen, err := readU32(r)
+		if err != nil {
+			return nil, err
+		}
+		astData := make([]byte, astLen)
+		if _, err := io.ReadFull(r, astData); err != nil {
+			return nil, err
+		}
+		tree, err = decodeAST(astData)
+		if err != nil {
+			return nil, fmt.Errorf("invalid object: AST section decode failed: %w", err)
+		}
+	}
 	subCount, err := readU32(r)
 	if err != nil {
 		return nil, err
@@ -136,6 +155,7 @@ func decodeX96Object(data []byte) (*Chunk, error) {
 		Name:       name,
 		SourceFile: srcFile,
 		SourceText: srcText,
+		AST:        tree,
 		SubChunks:  make([]*Chunk, 0, subCount),
 	}
 

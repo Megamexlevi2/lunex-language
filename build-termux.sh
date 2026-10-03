@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUT_DIR="$SCRIPT_DIR"
 
-GOOS="linux"
+GOOS="android"
 
 detect_arch() {
     case "$(uname -m)" in
@@ -30,10 +30,17 @@ build_go() {
     mkdir -p "$(dirname "$out")"
     local goarch
     goarch="$(normalize_go_arch "$arch")"
-    echo "Building lunex for linux/$goarch..."
+    echo "Building lunex for android/$goarch..."
     GOOS="$GOOS" GOARCH="$goarch" CGO_ENABLED=0 \
-        go build -trimpath -ldflags "-s -w" -o "$out" ./cmd/lunex
+        go build -buildmode=pie -trimpath -tags netgo,osusergo -ldflags "-s -w" -o "$out" ./cmd/lunex
     chmod +x "$out"
+    if [ "$goarch" = "arm64" ] && command -v readelf >/dev/null 2>&1; then
+        interp="$(readelf -lW "$out" 2>/dev/null | awk '/Requesting program interpreter:/{gsub(/[\[\]]/, "", $NF); print $NF; exit}')"
+        case "$interp" in
+            /system/bin/linker64|/apex/com.android.runtime/bin/linker64) ;;
+            *) echo "Android arm64 binary has an invalid ELF interpreter: ${interp:-missing}" >&2; exit 1 ;;
+        esac
+    fi
     echo "  -> $out"
 }
 
@@ -45,7 +52,7 @@ build_all() {
 }
 
 clean() {
-    rm -rf "$OUT_DIR"
+    rm -rf "$OUT_DIR/arm64" "$OUT_DIR/arm" "$OUT_DIR/amd64"
 }
 
 case "${1:-build}" in
@@ -55,7 +62,7 @@ case "${1:-build}" in
         echo "Done. Binaries in $OUT_DIR"
         ;;
     native)
-        # Build for the current device only
+
         mkdir -p "$OUT_DIR"
         build_go "$(detect_arch)"
         ;;

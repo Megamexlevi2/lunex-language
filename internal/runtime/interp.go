@@ -14,6 +14,7 @@ type returnSignal struct{ value *Value }
 type throwSignal struct{ value *Value }
 
 type NTLLoader func(name string) (string, bool)
+type NTLASTLoader func(name string) (*ast.Node, string, bool)
 
 type NTLFileLoader func(name string) (src, realPath string, ok bool)
 
@@ -36,8 +37,10 @@ type Interpreter struct {
 	currentCol    int
 	defers        []deferEntry
 	ntlLoader     NTLLoader
+	astLoader     NTLASTLoader
 	ntlFileLoader NTLFileLoader
 	naxLoader     NaxLoader
+	moduleLoader  func(string) (*Value, bool)
 	libLoadDepth  int32
 	callDepth     int
 	templateCache sync.Map
@@ -45,25 +48,10 @@ type Interpreter struct {
 	execSteps     int64
 	maxExecSteps  int64
 	spawnSlots    chan struct{}
+	jitMu         sync.Mutex
+	jitLoops      map[*ast.Node]*jitLoopState
 }
 
-// defaultMaxExecSteps caps how many AST nodes a script may evaluate
-// before the interpreter aborts it as a likely infinite loop or
-// runaway recursion (see consumeExecutionBudget in limits.go). Each
-// executed statement and each evaluated sub-expression both count as
-// one step, so a single loop iteration like `i = i + 1` typically
-// costs several steps, not one — a plain `while` counting to a few
-// hundred thousand can legitimately use millions of steps. This
-// default is sized to comfortably clear that kind of ordinary,
-// non-recursive workload while still catching genuine runaway
-// recursion (which blows through any reasonable budget almost
-// immediately, since each recursive call multiplies the remaining
-// work rather than just adding to it).
-//
-// Set LUNEX_MAX_STEPS to override this at runtime, e.g. for a script
-// that legitimately needs to run longer, or set it to 0 to disable
-// the budget entirely and rely on other limits (spawn slots, host
-// timeouts) instead.
 const defaultMaxExecSteps = 200_000_000
 
 func resolveMaxExecSteps() int64 {
@@ -85,6 +73,7 @@ func NewInterpreter() *Interpreter {
 		modules:      make(map[string]*Value),
 		maxExecSteps: resolveMaxExecSteps(),
 		spawnSlots:   make(chan struct{}, 256),
+		jitLoops:     make(map[*ast.Node]*jitLoopState),
 	}
 	interp.registerBuiltins()
 	CallFunction = func(fn *Value, args []*Value, this ...*Value) (*Value, error) {
@@ -202,6 +191,17 @@ func (interp *Interpreter) GetGlobal(name string) (*Value, bool) {
 
 func (interp *Interpreter) GetAllGlobalNames() []string {
 	return interp.globals.AllNames()
+}
+
+func (interp *Interpreter) CallValue(fn *Value, args ...*Value) (*Value, error) {
+	interp.resetExecutionBudget()
+	return interp.callFunctionValue(fn, args, nil)
+}
+
+func (interp *Interpreter) SetASTLoader(loader NTLASTLoader) { interp.astLoader = loader }
+func (interp *Interpreter) ASTLoader() NTLASTLoader          { return interp.astLoader }
+func (interp *Interpreter) SetModuleLoader(loader func(string) (*Value, bool)) {
+	interp.moduleLoader = loader
 }
 
 func (interp *Interpreter) SetNTLLoader(loader NTLLoader) {

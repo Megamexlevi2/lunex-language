@@ -557,10 +557,6 @@ func Info() string {
 	return sb.String()
 }
 
-// availableMemoryBytes returns total device RAM on Linux-based systems
-// (including Android and Termux) by reading /proc/meminfo. It returns 0
-// if the value can't be determined, which callers treat as "unknown"
-// rather than as zero memory.
 func availableMemoryBytes() uint64 {
 	f, err := os.Open("/proc/meminfo")
 	if err != nil {
@@ -587,12 +583,6 @@ func availableMemoryBytes() uint64 {
 	return 0
 }
 
-// littleCoreCount estimates how many of the CPU's logical cores are
-// low-power ("little"/efficiency) cores on typical mobile big.LITTLE
-// SoCs, by reading each core's cpuinfo_max_freq and clustering around
-// the median. This is a heuristic — it has no effect outside of
-// improving scheduling choices below, and any error simply falls back
-// to using every core as usual.
 func littleCoreCount() int {
 	nCPU := runtime.NumCPU()
 	if nCPU <= 2 {
@@ -637,15 +627,6 @@ func littleCoreCount() int {
 	return little
 }
 
-// tunedGOMAXPROCS picks a GOMAXPROCS value for Android/Termux devices.
-// Scheduling the Go runtime across every logical core (including
-// power-efficient "little" cores on a big.LITTLE SoC) tends to add
-// scheduling latency and jitter without much throughput gain for an
-// interpreter workload, since the little cores are slow and get
-// preempted by the OS for UI and background work. Restricting to the
-// faster cores gives steadier, lower-latency execution, which is what
-// interactive use (a REPL, a UI shelling out to lunex, live reload)
-// actually benefits from.
 func tunedGOMAXPROCS() int {
 	total := runtime.NumCPU()
 	little := littleCoreCount()
@@ -660,19 +641,6 @@ func tunedGOMAXPROCS() int {
 	return big
 }
 
-// applyAndroidTuning configures the Go runtime for smoother, more
-// consistent behavior on Android and Termux. It is safe to call on any
-// platform: it's a no-op unless the current platform is Android-like.
-//
-// The adjustments here are about latency consistency, not raw speed:
-// mobile devices are memory-constrained relative to desktops, storage
-// is often slower (scoped storage / F2FS on many devices), and CPUs
-// mix fast and slow cores. Left at defaults, the Go runtime can trigger
-// GC pauses or spread work onto slow cores at moments that translate
-// into visible hitches for anything built on top of lunex (a UI, a
-// live-reloading dev loop, a game). Every knob below only takes effect
-// if the user hasn't already set the equivalent environment variable,
-// so explicit configuration always wins.
 func applyAndroidTuning() {
 	if !IsAndroidLike() {
 		return
@@ -687,9 +655,9 @@ func applyAndroidTuning() {
 	if os.Getenv("GOGC") == "" {
 		mem := availableMemoryBytes()
 		switch {
-		case mem > 0 && mem < 3<<30: // < 3 GiB total RAM
+		case mem > 0 && mem < 3<<30:
 			debug.SetGCPercent(30)
-		case mem > 0 && mem < 6<<30: // < 6 GiB total RAM
+		case mem > 0 && mem < 6<<30:
 			debug.SetGCPercent(40)
 		default:
 			debug.SetGCPercent(50)
@@ -699,13 +667,10 @@ func applyAndroidTuning() {
 	if os.Getenv("GOMEMLIMIT") == "" {
 		mem := availableMemoryBytes()
 		if mem > 0 {
-			// Cap the runtime's soft memory limit well below total
-			// device RAM so the OS's low-memory killer never has a
-			// reason to step in — losing a foreground app to the LMK
-			// is a much worse experience than an extra GC cycle.
+
 			limit := mem / 4
-			const floor = 64 << 20  // 64 MiB
-			const ceiling = 256 << 20 // 256 MiB
+			const floor = 64 << 20
+			const ceiling = 256 << 20
 			if limit < floor {
 				limit = floor
 			}
@@ -716,80 +681,29 @@ func applyAndroidTuning() {
 		}
 	}
 
-	// Favors keeping compiled bytecode in the in-memory cache rather
-	// than round-tripping through disk on every lookup. Android's
-	// storage stack (scoped storage, FUSE emulation on external
-	// storage, F2FS GC pauses) has noticeably higher and less
-	// predictable I/O latency than desktop SSDs, and repeated file
-	// opens for the same cached module are a common source of
-	// interface stutter during interactive use (e.g. rerunning a
-	// script on every save). The disk cache is still written for
-	// persistence across process restarts; this only changes what's
-	// checked first.
 	preferMemCache = true
 
 	androidTuningApplied = true
 }
 
-// androidTuningApplied reports whether applyAndroidTuning has already
-// set the process's GC knobs, so other init paths (e.g. the generic
-// tuning in the app package) know not to overwrite them with
-// non-Android defaults.
 var androidTuningApplied = false
 
-// AndroidTuningApplied reports whether Android-specific runtime tuning
-// is active for this process. Other packages that also adjust GC or
-// memory settings at startup should check this first and skip their
-// own defaults when it's true, so the more specific mobile tuning
-// isn't clobbered by a later, more generic init().
 func AndroidTuningApplied() bool {
 	return androidTuningApplied
 }
 
-// preferMemCache controls whether CacheLookup checks the in-memory
-// cache before the on-disk cache. It defaults to disk-first (the
-// original behavior) and is only flipped by applyAndroidTuning.
 var preferMemCache = false
 
 func init() {
 	applyAndroidTuning()
 }
 
-// defaultTerminalWidth is used whenever the real width can't be
-// determined (piped output, an unusual terminal, etc). 80 matches the
-// traditional terminal default; narrower phone screens are handled by
-// the detection below rather than by lowering this fallback.
 const defaultTerminalWidth = 80
 
-// minTerminalWidth is a floor below which text wrapping stops trying
-// to be clever and just uses the minimum, since a terminal narrower
-// than this (a very small phone in split-screen, for instance) can't
-// usefully lay out most of the CLI's multi-column output anyway.
 const minTerminalWidth = 32
 
-// TerminalWidth returns the current terminal width in columns, for
-// wrapping and aligning CLI output. It tries, in order:
-//  1. $COLUMNS, which many shells (including Termux's) export or can
-//     be told to export, and which always wins if set — it's the most
-//     direct way for a user or wrapping app to state the width;
-//  2. a direct TIOCGWINSZ ioctl against the controlling terminal,
-//     available on Linux, macOS, the BSDs, and Termux;
-//  3. defaultTerminalWidth, if neither source is available (e.g.
-//     output is piped to a file).
-//
-// This matters more on phones than on desktops: a Termux window is
-// often 40-60 columns instead of the traditional 80, so hardcoding 80
-// causes wide help text and error frames to wrap badly mid-word. On
-// Android/Termux specifically, an unusually narrow result is trusted
-// as-is rather than second-guessed, since that's the expected case
-// this function exists to handle.
 func TerminalWidth() (width int) {
-	// Belt-and-suspenders: width detection touches the OS (env vars,
-	// ioctls, /dev/tty) and must never be allowed to take the whole
-	// process down just because it's rendering an error message. If
-	// anything below panics or a platform surprises us with a syscall
-	// failure that isn't handled explicitly, fall back to the default
-	// instead of propagating.
+
 	defer func() {
 		if recover() != nil {
 			width = defaultTerminalWidth
@@ -815,7 +729,3 @@ func clampWidth(n int) int {
 	}
 	return n
 }
-
-// ttyWidth is implemented per-platform in adaptor_unix.go (via ioctl)
-// and adaptor_other.go (stub for Windows/WASM). See those files for
-// why this replaced the old `stty size` subprocess approach.

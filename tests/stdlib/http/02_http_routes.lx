@@ -1,29 +1,29 @@
-val io   = @import("std.io")
+val io = @import("std.io")
 val http = @import("std.http")
-val os   = @import("std.os")
+val router = @import("std.http.router")
+val os = @import("std.os")
 
 fn main() {
-  val server = http.createServer(fn(req, res) {})
+  val api = router.create([
+    router.get("/users/:id", fn(req, res) {
+      http.json(res, { id: req.params.id }, 200)
+    }),
+    router.post("/echo", fn(req, res) {
+      val parsed = http.parseBody(req)
+      http.json(res, parsed, 200)
+    })
+  ])
 
-  server.get("/users/:id", fn(req, res) {
-    http.json(res, { id: req.params.id }, 200)
-  })
-
-  server.post("/echo", fn(req, res) {
-    val parsed = http.parseBody(req)
-    http.json(res, parsed, 200)
-  })
-
-  val handle = http.listen(server, 39218, "127.0.0.1")
+  val handle = api.listen(39218, "127.0.0.1")
   os.sleep(150)
 
   val getResp = http.get("http://127.0.0.1:39218/users/42")
-  io.log("param_id:", getResp.body.id)
+  io.log("param_id:", getResp.json().id)
 
   val postResp = http.post("http://127.0.0.1:39218/echo", {
-    body: { message: "hi" }
+    json: { message: "hi" }
   })
-  io.log("echoed:", postResp.body.message)
+  io.log("echoed:", postResp.json().message)
 
   handle.close()
   io.log("PASS http_routes")

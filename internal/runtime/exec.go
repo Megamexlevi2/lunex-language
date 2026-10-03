@@ -4,9 +4,18 @@ import (
 	"fmt"
 	"lunex/internal/ast"
 	"lunex/internal/errfmt"
+	"lunex/internal/resolver"
 )
 
 func (interp *Interpreter) Exec(program *ast.Node) (*Value, error) {
+	return interp.execProgram(program, true)
+}
+
+func (interp *Interpreter) ExecTrusted(program *ast.Node) (*Value, error) {
+	return interp.execProgram(program, false)
+}
+
+func (interp *Interpreter) execProgram(program *ast.Node, validateTopLevel bool) (*Value, error) {
 	interp.resetExecutionBudget()
 	env := NewEnvironment(interp.globals)
 	interp.topEnv = env
@@ -24,12 +33,14 @@ func (interp *Interpreter) Exec(program *ast.Node) (*Value, error) {
 		}
 	}
 
-	for _, stmt := range program.Body_ {
-		if stmt == nil {
-			continue
-		}
-		if err := interp.checkTopLevelStatement(stmt); err != nil {
-			return nil, err
+	if validateTopLevel {
+		for _, stmt := range program.Body_ {
+			if stmt == nil {
+				continue
+			}
+			if err := interp.checkTopLevelStatement(stmt); err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -54,17 +65,7 @@ func (interp *Interpreter) checkTopLevelStatement(stmt *ast.Node) *errfmt.LunexE
 		return interp.checkTopLevelExpr(expr, stmt)
 
 	default:
-		e := &errfmt.LunexError{
-			Message:    fmt.Sprintf("statement of type `%s` is not allowed at the top level", stmt.Type),
-			File:       interp.filename,
-			Kind:       errfmt.KindSyntax,
-			Code:       "E0071",
-			Line:       stmt.Line,
-			Col:        stmt.Col,
-			Lines:      interp.sourceLines,
-			Notes:      []string{"only declarations (`fn`, `val`, `var`, `class`) and imports are allowed outside `main`"},
-			Suggestion: "move this code inside `fn main() { ... }`",
-		}
+		e := errfmt.TopLevelStatementError(string(stmt.Type), interp.filename, stmt.Line, stmt.Col, interp.sourceLines)
 		return e
 	}
 }
@@ -82,59 +83,20 @@ func (interp *Interpreter) checkTopLevelExpr(expr *ast.Node, stmt *ast.Node) *er
 		}
 
 		if calleeName == "main" {
-			e := &errfmt.LunexError{
-				Message: "explicit call to `main()` is not allowed",
-				File:    interp.filename,
-				Kind:    errfmt.KindSyntax,
-				Code:    "E0072",
-				Line:    stmt.Line,
-				Col:     stmt.Col,
-				Lines:   interp.sourceLines,
-				Notes: []string{
-					"`main` is the entry point and Lunex calls it automatically",
-					"calling `main()` manually re-enters the program",
-				},
-				Suggestion: "remove the `main()` call; Lunex runs it automatically",
-			}
-			return e
+			return errfmt.ExplicitMainCallError(interp.filename, stmt.Line, stmt.Col, interp.sourceLines)
 		}
 
-		suggestion := "move `" + calleeName + "(...)` inside `fn main() { ... }`"
-		if calleeName == "" {
-			suggestion = "move this call inside `fn main() { ... }`"
-		}
-		e := &errfmt.LunexError{
-			Message: fmt.Sprintf("function call `%s(...)` is not allowed at the top level", calleeName),
-			File:    interp.filename,
-			Kind:    errfmt.KindSyntax,
-			Code:    "E0071",
-			Line:    stmt.Line,
-			Col:     stmt.Col,
-			Lines:   interp.sourceLines,
-			Notes: []string{
-				"top-level code is limited to declarations and imports",
-				"all executable logic must live inside `fn main()`",
-			},
-			Suggestion: suggestion,
-			ExBad:      "test()   top-level call not allowed",
-			ExGood:     "fn main() {\n  test()\n}",
-		}
-		return e
+		return errfmt.TopLevelCallError(calleeName, interp.filename, stmt.Line, stmt.Col, interp.sourceLines)
 
 	case ast.AssignExpr:
-		e := &errfmt.LunexError{
-			Message:    "top-level assignment is not allowed; use `val` or `var` instead",
-			File:       interp.filename,
-			Kind:       errfmt.KindSyntax,
-			Code:       "E0071",
-			Line:       stmt.Line,
-			Col:        stmt.Col,
-			Lines:      interp.sourceLines,
-			Suggestion: "use a declaration:  val name = <value>",
-		}
-		return e
+		return errfmt.TopLevelAssignmentError(interp.filename, stmt.Line, stmt.Col, interp.sourceLines)
 	}
-	return nil
+	return errfmt.TopLevelStatementError(string(expr.Type), interp.filename, stmt.Line, stmt.Col, interp.sourceLines)
+}
+
+func (interp *Interpreter) ExecASTAsModule(tree *ast.Node, filename string) (*Value, error) {
+	interp.resetExecutionBudget()
+	return interp.evalModuleAST(tree, filename)
 }
 
 func (interp *Interpreter) ExecAsModule(source, filename string) (*Value, error) {
@@ -151,21 +113,7 @@ func (interp *Interpreter) CallMain() error {
 	}
 	mainVal, ok := interp.topEnv.Get("main")
 	if !ok || mainVal == nil {
-		e := &errfmt.LunexError{
-			Message: "entry point `main` is not defined",
-			File:    interp.filename,
-			Kind:    errfmt.KindReference,
-			Code:    "E0070",
-			Lines:   interp.sourceLines,
-			Notes: []string{
-				"every Lunex program requires a `fn main()` entry point",
-				"top-level code outside `main` is not allowed in executable files",
-			},
-			Suggestion: "add a main function:\n\n  fn main() {\n    your code here\n  }",
-			ExGood:     "fn main() {\n  val io = @import(\"std.io\")\n  io.log(\"hello\")\n}",
-			ExBad:      "val io = @import(\"std.io\")\nio.log(\"hello\")",
-		}
-		return e
+		return errfmt.MissingMainError(interp.filename, interp.sourceLines)
 	}
 	_, err := interp.callFunctionValue(mainVal, []*Value{}, nil)
 	if err != nil {
@@ -256,10 +204,6 @@ func valueToGo(v *Value) interface{} {
 	}
 }
 
-// blockNeedsOwnScope reports whether a Block node declares any bindings
-// directly in its own body (var/const/fn/class/etc). The result is computed
-// once per distinct AST node and cached, since the answer never changes for
-// a given piece of source.
 func blockNeedsOwnScope(node *ast.Node) bool {
 	if node.NeedsScopeCache != nil {
 		return *node.NeedsScopeCache
@@ -313,12 +257,10 @@ func (interp *Interpreter) execNode(node *ast.Node, env *Environment) (*Value, e
 		return interp.execBlock(node.Body_, env)
 	case ast.Block:
 		if !blockNeedsOwnScope(node) {
-			// No declarations of its own: safe to run directly in the
-			// parent's Environment, skipping the pool round-trip. This is
-			// the common case for tight loop bodies like `{ i = i + 1 }`.
+
 			return interp.execBlock(node.Body_, env)
 		}
-		childEnv := NewEnvironment(env)
+		childEnv := NewResolvedEnvironment(env, resolver.SlotCount(node.ScopeInfo))
 		result, err := interp.execBlock(node.Body_, childEnv)
 		ReleaseEnvironment(childEnv)
 		return result, err
@@ -346,8 +288,6 @@ func (interp *Interpreter) execNode(node *ast.Node, env *Environment) (*Value, e
 		return interp.execUsing(node, env)
 	case ast.ExprStmt:
 		return interp.evalExpr(node.Expr, env)
-	case ast.LogStmt:
-		return interp.execLog(node, env)
 	case ast.ReturnStmt:
 		var val *Value = Undefined
 		var err error

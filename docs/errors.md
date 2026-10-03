@@ -5,15 +5,15 @@ the codes that the current build actually emits, grouped by where they come
 from.
 
 Error codes follow the pattern `E####` (or `W####` for warnings, `S####`
-for runtime "suspect" warnings). **Two different commands use two
-different, non-overlapping numbering schemes** — see below.
+for runtime "suspect" warnings). `lunex run` and `lunex check` use the same
+error-code system.
 
 ---
 
 ## How to read an error
 
 ```
-✗ error[scope][E0001]: 'usr' is not defined
+✗ error[scope][E0001]: variable `usr` was not defined
   ──▶ main.lx:12:3
 
  10 │
@@ -35,45 +35,16 @@ different, non-overlapping numbering schemes** — see below.
 
 ---
 
-## Important: `lunex run` and `lunex check` use different code schemes
+## `lunex run` and `lunex check` use the same diagnostics
 
-This is the single most important thing to know about Lunex error codes:
-**the numbers below E0200 and the numbers in the E0400–E0699 range come
-from two separate, unrelated parts of the compiler, and they were assigned
-independently.**
+`lunex check` performs the same source validation rules used before
+execution by `lunex run`, but stops before the program is executed. Both
+commands use the same `errfmt.LunexError` representation, error codes,
+messages, source locations, suggestions, notes, and formatting.
 
-- **`lunex run`** (and the REPL) parse and execute the file directly. Errors
-  raised during parsing or execution use the low-numbered scheme:
-  `E0001`–`E0101`, plus `E1000`–`E1010` for certain parse errors, `W0001`
-  for deprecation warnings, and `S0001`–`S0007` for runtime "suspect"
-  warnings (see below). This is the scheme in the "Parser and runtime
-  errors" section.
-- **`lunex check`** (and `lunex see_errors`) run a separate static analysis
-  pass (`internal/checker`) that never runs during a plain `lunex run`. It
-  reports a different, higher-numbered scheme in the `E0400`–`E0699` range
-  (loosely inspired by Rust compiler diagnostics), documented in "Static
-  checker errors" below. Running `lunex check` on a file can surface errors
-  with codes that don't appear anywhere in the "Parser and runtime errors"
-  table, and vice versa — that's expected, not a bug in the tool you're
-  using.
-
-If you're debugging by searching for an error code, first check which
-command produced it.
-
-### One remaining cross-scheme overlap: `E0061`
-
-`E0061` means two different things depending on which command reported it:
-at runtime (`lunex run`), it's `assertion failed: <expr>` from a failed
-`assert`. Under `lunex check`, the *same number* is used for "wrong number
-of arguments" (see the checker table below). These come from independent
-numbering schemes that happen to collide on this one value — check which
-command produced the error to know which meaning applies.
-
-> **Previously, `E0010` was also reused for both "module not found" and
-> "stack overflow."** This has been fixed: stack overflow now reports as
-> `E0060`, distinct from the `E0010` used for unresolved `@import` paths.
-
----
+A diagnostic discovered statically is therefore reported with the same code
+and message that the runtime uses for the corresponding failure. `check` does
+not maintain a second error-code namespace.
 
 ## Error categories
 
@@ -108,7 +79,7 @@ comes from one of these categories:
 
 | Code   | Message you'll see                          | Cause                                                   |
 |--------|-----------------------------------------------|------------------------------------------------------------|
-| E0001  | `'<name>' is not defined`                       | Variable used before it was declared, or misspelled       |
+| E0001  | `variable <name> was not defined`             | Variable used before it was declared, or misspelled       |
 | E0002F | `'<name>' is not defined` (function form)         | A function call target doesn't resolve to anything          |
 | E0003  | `'<name>' is not a function`                        | Tried to call something that isn't a function                  |
 | E0004  | `cannot read property of null: '<name>'`              | Field or method access on a `null` value                         |
@@ -191,7 +162,7 @@ specific E1000-series codes above instead.
 | Code  | Message you'll see                       | Cause                                                       |
 |-------|----------------------------------------------|------------------------------------------------------------------|
 | E0060 | `call stack depth exceeded (<n> frames)`         | Infinite or excessive recursion                                     |
-| E0061 | `assertion failed: <expr>`                          | An `assert` failed at runtime (see the cross-scheme note above)        |
+| E0061 | `assertion failed: <expr>`                          | An `assert` failed at runtime |
 | E0063 | I/O operation failed                                   | A file/stream operation failed                                            |
 | E0064 | permission denied                                        | The OS denied an operation                                                   |
 | E0065 | operation timed out                                        | An operation (e.g. a configured execution budget) exceeded its deadline        |
@@ -205,6 +176,53 @@ not-implemented, and the format/crypto/db/auth/rate-limit/file/type/
 nullable/uninitialized-const family) are all registered with titles and
 suggestions, for use by the standard library and future checks, but don't
 currently have a confirmed live call site outside the registry itself.
+
+## Native FFI errors (E0120–E0133)
+
+| Code  | Message you'll see | Cause |
+|---|---|---|
+| E0120 | `native FFI is disabled for this Lunex process` | A native FFI operation was requested without the CLI-only FFI switch |
+| E0121 | `FFI library path must be a non-empty string` | The library path is missing or not a string |
+| E0122 | `failed to load native library ...` | The operating-system dynamic loader rejected the library |
+| E0123 | `symbol ... was not found` | The requested native symbol is unavailable |
+| E0124 | `cannot bind ... from a closed native library` | The library or bound function has already been closed |
+| E0125 | `... requires ...` | An FFI operation received the wrong number or shape of arguments |
+| E0126 | `invalid FFI signature ...` | The signature or descriptor cannot be parsed |
+| E0127 | `unsupported FFI type ...` | The declared ABI type is not supported by `std.ffi` |
+| E0128 | `native call ... failed` | The native call could not be prepared or invoked safely |
+| E0129 | `failed to create native callback` | The callback ABI could not be represented by the host callback bridge |
+| E0130 | `native allocation ...` | Native allocation or reallocation failed |
+| E0131 | `expected an FFI pointer ...` | A value could not be converted to the requested native representation |
+| E0132 | `native memory ... exceeds ...` | A bounded native memory operation would exceed the known allocation length |
+| E0133 | `invalid FFI option syntax` | The CLI FFI switch was not written as `ffi = on|off` |
+
+All FFI diagnostics are emitted through the same `errfmt.LunexError` formatter
+used by the rest of the language. FFI activation itself is checked before
+native operations begin, so an application that leaves FFI disabled cannot load
+a native library accidentally through source code or environment configuration.
+
+## Environment errors (E0110–E0111)
+
+| Code | Message you'll see | Cause |
+|---|---|---|
+| E0110 | `required environment variable is not set` | `env.require(key)` was called for a variable that does not exist |
+| E0111 | `environment file operation failed` | A dotenv file could not be read or its parsed values could not be applied |
+
+`env.require` uses the normal Lunex diagnostic formatter. When the requested
+key is known, the runtime message identifies it directly, for example
+`required environment variable 'PORT' is not set`.
+
+Use `env.get(key, default)` when a missing variable is expected. Use
+`env.config(path)` when the caller needs the parsed object and a structured file
+error instead of a boolean result.
+
+## NAX packing errors (E0112)
+
+| Code | Message you'll see | Cause |
+|---|---|---|
+| E0112 | `NAX pack pipeline rejected the artifact` | An internal checker, resolver, compiler, or module-graph invariant failed during `lunex pack` before archive emission |
+
+`E0112` is reserved for internal packing invariants, not ordinary source mistakes. Lexer, parser, resolver, checker, and module-graph diagnostics are reported first with their normal Lunex codes, and no `.nax` artifact is emitted while validation fails.
 
 ### Deprecation warning (W0001)
 
@@ -237,42 +255,6 @@ program by themselves. These show up as `error[suspect][S000X]` by default.
 
 ---
 
-## Static checker errors (`lunex check`, `lunex see_errors`)
-
-These come from `internal/checker`, a separate static-analysis pass that
-only runs when you explicitly invoke `lunex check` or `lunex see_errors` —
-**not** during a normal `lunex run`. The numbering is unrelated to the
-scheme above.
-
-| Code  | Message you'll see                                                    | Cause                                                     |
-|-------|-------------------------------------------------------------------------|----------------------------------------------------------------|
-| E0061 | `this function takes <n> argument(s) but <m> argument(s) were supplied`      | Function called with the wrong number of arguments — see the cross-scheme note above |
-| E0071 | `statement of type '<kind>' is not allowed at the top level`                  | Executable code outside `fn main() { ... }`                            |
-| E0268 | `'<kind>' is not valid outside a loop`                                           | `break`/`continue` used outside `while`/`for`/`each`/`repeat`/`loop`     |
-| E0400 | `cannot resolve import "<path>"` / `module "<path>" could not be resolved`       | An `@import`/`@fimport` target couldn't be found                          |
-| E0401 | `cyclic module import detected`                                                    | Two or more modules import each other in a cycle                              |
-| E0402 | `import path must not be empty`                                                      | An `@import`/`@fimport` call was given an empty path                            |
-| E0403 | `invalid destructuring pattern`                                                        | Malformed object/array destructuring                                             |
-| E0412 | `cannot find type '<name>' in this scope`                                                | Referenced a type that hasn't been declared or imported                            |
-| E0415 | `parameter '<name>' is defined more than once`                                             | Duplicate parameter name in a function signature                                     |
-| E0425 | `cannot find value '<name>' in this scope` / `cannot assign to unresolved name '<name>'`    | Name doesn't resolve to any declaration                                                |
-| E0428 | `the name '<name>' is defined multiple times (in this scope)`                                | Duplicate declaration of the same name                                                   |
-| E0432 | `unresolved export '<name>'` / `unresolved import '<name>' from module "<path>"`              | An exported or imported name doesn't exist in the target module                            |
-| E0572 | `` `return` is not valid outside a function ``                                                  | A `return` statement appeared outside any function                                          |
-| E0594 | `cannot assign to immutable '<name>'`                                                             | Attempted to reassign a `val` binding (checker-time equivalent of runtime E0005)              |
-| E0599 | `no member named '<name>' found for module '<name>'`                                                | Accessed a member that doesn't exist on an imported module                                      |
-| E0601 | `function 'main' is not defined`                                                                      | The file has no `fn main()` (checker-time equivalent of runtime E0070)                            |
-
-Each of these diagnostics also comes with a `Help:` suggestion in the actual
-CLI output (e.g. "rename one declaration or remove the duplicate") that
-isn't reproduced verbatim here — run `lunex check <file>` to see it.
-
-Note that `internal/checker` is independent of the recent error-code
-realignment in `internal/errfmt` described above; its numbering (E0061,
-E0071, E0268, E0400–E0601) hasn't changed.
-
----
-
 ## Filing a bug
 
 If you hit an error whose message looks like an internal inconsistency
@@ -288,3 +270,9 @@ Include:
 - A minimal `.lx` file that reproduces the issue
 - The complete error output, including which command produced it
   (`lunex run` vs. `lunex check`)
+
+## `watch`
+
+### E0114 — Invalid watch declaration
+
+The runtime received an invalid `watch` declaration. Source code normally catches this earlier during parsing. A valid target is a variable or member expression followed by a block.

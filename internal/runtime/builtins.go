@@ -104,24 +104,6 @@ func (interp *Interpreter) registerBuiltins() {
 		return BoolVal(args[0].IsTruthy()), nil
 	}}), false)
 
-	g.Define("print", FuncVal(&Function{Name: "print", Native: func(args []*Value, this *Value) (*Value, error) {
-		parts := make([]string, len(args))
-		for i, a := range args {
-			parts[i] = a.ToString()
-		}
-		fmt.Println(strings.Join(parts, " "))
-		return Null, nil
-	}}), false)
-
-	g.Define("log", FuncVal(&Function{Name: "log", Native: func(args []*Value, this *Value) (*Value, error) {
-		parts := make([]string, len(args))
-		for i, a := range args {
-			parts[i] = a.ToString()
-		}
-		fmt.Println(strings.Join(parts, " "))
-		return Null, nil
-	}}), false)
-
 	g.Define("Array", ObjectVal(map[string]*Value{
 		"isArray": FuncVal(&Function{Name: "isArray", Native: func(args []*Value, this *Value) (*Value, error) {
 			if len(args) == 0 {

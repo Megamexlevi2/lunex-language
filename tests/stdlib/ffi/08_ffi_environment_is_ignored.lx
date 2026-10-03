@@ -1,0 +1,21 @@
+val io = @import("std.io")
+val ffi = @import("std.ffi")
+
+fn main() {
+  if ffi.enabled() {
+    throw "FAIL environment must not enable FFI"
+  }
+
+  var blocked = false
+  try {
+    ffi.load("libc.so")
+  } catch (e) {
+    blocked = e.code == "E0120"
+  }
+
+  if !blocked {
+    throw "FAIL environment override was accepted"
+  }
+
+  io.log("PASS ffi_environment_is_ignored")
+}

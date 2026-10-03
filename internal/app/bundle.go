@@ -11,7 +11,7 @@ import (
 	"strings"
 )
 
-func buildNAXBundle(absInput, inputFile, outputFile, sourceText string, tree *ast.Node) error {
+func buildNAXBundle(absInput, inputFile, outputFile, sourceText string, tree *ast.Node, includeSource bool) error {
 	rootDir := filepath.Dir(absInput)
 
 	mainRel, err := filepath.Rel(rootDir, absInput)
@@ -23,45 +23,37 @@ func buildNAXBundle(absInput, inputFile, outputFile, sourceText string, tree *as
 		return fmt.Errorf("error: entry file %s must be inside the project root %s", inputFile, rootDir)
 	}
 
-	deps, err := collectBundleDependencies(rootDir, absInput, tree)
+	deps, err := collectBundleDependencies(rootDir, absInput, tree, includeSource)
 	if err != nil {
 		return err
 	}
 
-	mainChunk := &bytecode.ExportedChunk{
-		Name:       strings.TrimSuffix(mainRel, ".lx"),
-		SourceFile: absInput,
-		SourceText: sourceText,
-	}
-	mainObject, err := bytecode.EncodeExportedWithAST(mainChunk, tree)
+	mainEntry, err := bytecode.NewNAXCompiledEntry(mainRel, absInput, sourceText, tree, includeSource)
 	if err != nil {
 		return fmt.Errorf("error encoding main module: %w", err)
 	}
 
-	entries := make([]bytecode.NAXEntry, 0, len(deps)+2)
-	entries = append(entries, bytecode.NAXEntry{Name: mainRel, Data: []byte(sourceText)})
-	entries = append(entries, bytecode.NAXEntry{Name: strings.TrimSuffix(mainRel, ".lx") + ".nax", Data: mainObject})
+	entries := make([]bytecode.NAXEntry, 0, len(deps)+1)
+	entries = append(entries, mainEntry)
 
 	keys := make([]string, 0, len(deps))
 	for k := range deps {
-		if k != mainRel && k != strings.TrimSuffix(mainRel, ".lx")+".nax" {
-			keys = append(keys, k)
-		}
+		keys = append(keys, k)
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
-		entries = append(entries, bytecode.NAXEntry{Name: k, Data: deps[k]})
+		entries = append(entries, deps[k])
 	}
 
 	arch := &bytecode.NAXArchive{
 		Entries:   entries,
-		MainIndex: 1,
+		MainIndex: 0,
 	}
 	return bytecode.PackNAXArchive(arch, outputFile)
 }
 
-func collectBundleDependencies(rootDir, absInput string, tree *ast.Node) (map[string][]byte, error) {
-	deps := make(map[string][]byte)
+func collectBundleDependencies(rootDir, absInput string, tree *ast.Node, includeSource bool) (map[string]bytecode.NAXEntry, error) {
+	deps := make(map[string]bytecode.NAXEntry)
 	visited := map[string]bool{
 		absInput: true,
 	}
@@ -98,15 +90,11 @@ func collectBundleDependencies(rootDir, absInput string, tree *ast.Node) (map[st
 				return fmt.Errorf("compile error for %s: %s", importRel, strings.Join(msgs, "; "))
 			}
 
-			chunk := &bytecode.ExportedChunk{
-				Name:       strings.TrimSuffix(importRel, ".lx"),
-				SourceFile: importAbs,
-				SourceText: string(data),
+			entry, err := bytecode.NewNAXCompiledEntry(importRel, importAbs, string(data), result.AST, includeSource)
+			if err != nil {
+				return fmt.Errorf("error encoding local import %s: %w", importRel, err)
 			}
-			if objectData, err := bytecode.EncodeExportedWithAST(chunk, result.AST); err == nil {
-				deps[strings.TrimSuffix(importRel, ".lx")+".nax"] = objectData
-			}
-			deps[importRel] = data
+			deps[importRel] = entry
 
 			if err := collect(importAbs, result.AST); err != nil {
 				return err

@@ -7,4 +7,4 @@ repository = "https://github.com/Megamexlevi2/lunex-language"
 entry = "main.lx"
 
 [lunex]
-min_version = "0.9.2"
+min_version = "0.9.3"

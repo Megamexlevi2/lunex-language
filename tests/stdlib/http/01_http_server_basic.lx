@@ -2,23 +2,44 @@ val io   = @import("std.io")
 val http = @import("std.http")
 val os   = @import("std.os")
 
-fn main() {
-  val server = http.createServer(fn(req, res) {
-    if req.path == "/ping" {
-      http.json(res, { status: "ok" }, 200)
-    } else {
-      http.text(res, "not found", 404)
-    }
-  })
+fn check(condition, label) {
+  if !condition {
+    throw "FAIL " + label
+  }
+}
 
-  val handle = http.listen(server, 39217, "127.0.0.1")
+fn handle(req, res) {
+  if req.path == "/ping" {
+    res.json({ status: "ok" })
+  } elif req.path == "/text" {
+    res.text("hello")
+  } elif req.path == "/created" {
+    res.status(201).json({ id: 1 })
+  } else {
+    res.json({ error: "not found" }, 404)
+  }
+}
+
+fn main() {
+  val server = http.createServer(handle)
+  server.listen(39217, "127.0.0.1")
   os.sleep(150)
 
-  val resp = http.get("http://127.0.0.1:39217/ping")
-  io.log("ok:", resp.ok)
-  io.log("status:", resp.status)
-  io.log("body_status:", resp.body.status)
+  val ping = http.get("http://127.0.0.1:39217/ping")
+  check(ping.ok, "ping ok")
+  check(ping.status == 200, "ping status")
+  check(ping.json().status == "ok", "ping body")
 
-  handle.close()
+  val text = http.get("http://127.0.0.1:39217/text")
+  check(text.text == "hello", "text body")
+
+  val created = http.get("http://127.0.0.1:39217/created")
+  check(created.status == 201, "created status")
+
+  val missing = http.get("http://127.0.0.1:39217/nope")
+  check(missing.status == 404, "missing status")
+  check(!missing.ok, "missing not ok")
+
+  server.close()
   io.log("PASS http_server_basic")
 }

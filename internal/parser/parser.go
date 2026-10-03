@@ -402,10 +402,6 @@ func (p *Parser) parseStmt() (*ast.Node, error) {
 		}
 	}
 
-	if t.Type == lexer.IDENTIFIER && t.StrVal() == "log" {
-		return p.parseLog()
-	}
-
 	expr, err := p.parseExpr()
 	if err != nil {
 		return nil, err
@@ -1439,23 +1435,6 @@ func (p *Parser) parseThrow() (*ast.Node, error) {
 	return &ast.Node{Type: ast.ThrowStmt, Value: val, Line: t.Line, Col: t.Col}, nil
 }
 
-func (p *Parser) parseLog() (*ast.Node, error) {
-	t := p.advance()
-	var args []*ast.Node
-	for !p.isLineEnd() && !p.check(lexer.PUNCTUATION, "}") && !p.check(lexer.EOF, "") {
-		arg, err := p.parseExpr()
-		if err != nil {
-			return nil, err
-		}
-		args = append(args, arg)
-		if !p.eatIf(lexer.PUNCTUATION, ",") {
-			break
-		}
-	}
-	p.eatSemi()
-	return &ast.Node{Type: ast.LogStmt, Args: args, Line: t.Line, Col: t.Col}, nil
-}
-
 func (p *Parser) parseGuard() (*ast.Node, error) {
 	t := p.advance()
 	test, err := p.parseExpr()
@@ -1784,8 +1763,7 @@ func (p *Parser) parseDecorated() (*ast.Node, error) {
 func (p *Parser) parseExprAsBlock() (*ast.Node, error) {
 	t := p.current()
 	stmtKws := map[string]bool{"assert": true, "throw": true, "raise": true, "break": true, "continue": true}
-	isLogIdent := t.Type == lexer.IDENTIFIER && t.StrVal() == "log"
-	if (stmtKws[t.StrVal()] && t.Type == lexer.KEYWORD) || isLogIdent {
+	if stmtKws[t.StrVal()] && t.Type == lexer.KEYWORD {
 		stmt, err := p.parseStmt()
 		if err != nil {
 			return nil, err
@@ -2727,9 +2705,6 @@ func (p *Parser) parseArrowBody() (*ast.Node, error) {
 		case "if", "unless", "throw", "raise", "var", "val", "let", "const":
 			return p.parseStmt()
 		}
-	}
-	if t.Type == lexer.IDENTIFIER && t.StrVal() == "log" {
-		return p.parseStmt()
 	}
 	return p.parseExpr()
 }

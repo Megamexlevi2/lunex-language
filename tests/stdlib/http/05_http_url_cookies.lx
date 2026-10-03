@@ -1,0 +1,65 @@
+val io   = @import("std.io")
+val http = @import("std.http")
+val os   = @import("std.os")
+
+fn check(condition, label) {
+  if !condition {
+    throw "FAIL " + label
+  }
+}
+
+fn main() {
+  val parts = http.parseURL("https://user@example.com:8443/a/b?x=1&y=two#top")
+  check(parts.protocol == "https", "protocol")
+  check(parts.hostname == "example.com" && parts.port == "8443", "host parts")
+  check(parts.path == "/a/b" && parts.query.y == "two" && parts.hash == "top", "path query hash")
+
+  val built = http.buildURL("https://example.com/search?q=a", { page: 2, tag: ["x", "y"] })
+  check(built == "https://example.com/search?page=2&q=a&tag=x&tag=y", "buildURL")
+
+  check(http.encode("a b/c?") == "a%20b%2Fc%3F", "encode")
+  check(http.decode("a%20b%2Fc") == "a b/c", "decode")
+  check(http.parseQuery("a=1&b=x+y").b == "x y", "parseQuery")
+  check(http.parseQuery("a=1&a=2", true).a.length == 2, "parseQuery all")
+  check(http.buildQuery({ b: 2, a: "x y" }) == "a=x+y&b=2", "buildQuery")
+  check(http.statusText(404) == "Not Found", "statusText")
+  check(http.status.CREATED == 201, "status constants")
+
+  check(http.parseCookies("a=1; b=2").b == "2", "parseCookies")
+  val cookie = http.serializeCookie("sid", "abc", { maxAge: 60, secure: true, sameSite: "strict" })
+  check(cookie.includes("sid=abc") && cookie.includes("Max-Age=60") && cookie.includes("Secure"), "serializeCookie")
+  check(cookie.includes("HttpOnly") && cookie.includes("SameSite=Strict"), "cookie defaults")
+
+  var badCookie = false
+  try {
+    http.serializeCookie("bad name", "x")
+  } catch (e) {
+    badCookie = e.code == "E_HTTP_INVALID_COOKIE"
+  }
+  check(badCookie, "invalid cookie name rejected")
+
+  val server = http.createServer(fn(req, res) {
+    res.cookie("seen", req.cookies.token)
+    res.setHeader("X-Query", req.query.q)
+    res.json({ hasHeader: req.header("x-custom") == "yes", all: req.queryAll.q.length })
+  })
+  server.listen(39221, "127.0.0.1")
+  os.sleep(150)
+
+  val resp = http.get("http://127.0.0.1:39221/?q=1&q=2", { headers: { "X-Custom": "yes", "Cookie": "token=t1" } })
+  check(resp.json().hasHeader, "request header")
+  check(resp.json().all == 2, "repeated query values")
+  check(resp.headers["x-query"] == "1", "first query value")
+  check(resp.cookies.length == 1 && resp.cookies[0].includes("seen=t1"), "response cookie")
+
+  var badHeader = false
+  try {
+    http.get("http://127.0.0.1:39221/", { headers: { "X-Bad": "a\r\nb" } })
+  } catch (e) {
+    badHeader = e.code == "E_HTTP_INVALID_HEADER"
+  }
+  check(badHeader, "header injection rejected")
+
+  server.close()
+  io.log("PASS http_url_cookies")
+}

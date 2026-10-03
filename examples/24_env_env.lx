@@ -1,0 +1,14 @@
+val env = @import("std.env")
+val io = @import("std.io")
+
+fn main() {
+  env.load()
+
+  val name = env.get("APP_NAME", "Lunex")
+  val port = env.get("PORT", "3000")
+  val debug = env.get("DEBUG", "false")
+
+  io.log(name)
+  io.log(port)
+  io.log(debug)
+}

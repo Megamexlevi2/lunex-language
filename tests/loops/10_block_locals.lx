@@ -1,0 +1,51 @@
+val io = @import("std.io")
+
+fn main() {
+  var total = 0
+  var i = 0
+  while i < 1000 {
+    var doubled = i * 2
+    var shifted = doubled + 1
+    total = total + shifted
+    i = i + 1
+  }
+  io.log("while locals:", total)
+
+  var outer = 0
+  var a = 0
+  while a < 50 {
+    var b = 0
+    while b < 50 {
+      var product = a * b
+      outer = outer + product
+      b = b + 1
+    }
+    a = a + 1
+  }
+  io.log("nested locals:", outer)
+
+  var kept = 7
+  var n = 0
+  while n < 100 {
+    if n % 3 == 0 {
+      var scratch = n + 1
+      kept = kept + scratch
+    }
+    n = n + 1
+  }
+  io.log("branch locals:", kept)
+
+  var flag = false
+  var m = 0
+  while m < 100 {
+    flag = m < 50
+    m = m + 1
+  }
+  io.log("comparison stored:", flag)
+
+  if total == 1000000 && outer == 1500625 && kept == 1724 && flag == false {
+    io.log("PASS block_locals")
+  } else {
+    io.log("FAIL block_locals")
+  }
+}

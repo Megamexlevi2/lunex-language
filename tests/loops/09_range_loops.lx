@@ -1,0 +1,55 @@
+val io = @import("std.io")
+
+fn main() {
+  var total = 0
+  for i in range(2000) {
+    total = total + i
+  }
+  io.log("range single:", total)
+
+  var stepped = 0
+  for i in range(0, 100, 7) {
+    stepped = stepped + i
+  }
+  io.log("range step:", stepped)
+
+  var down = 0
+  for i in range(10, 0, -3) {
+    down = down + i
+  }
+  io.log("range negative step:", down)
+
+  var empty = 0
+  for i in range(5, 5) {
+    empty = empty + 1
+  }
+  io.log("range empty:", empty)
+
+  var skipped = 0
+  for i in range(100) {
+    if i % 2 == 0 { continue }
+    skipped = skipped + i
+  }
+  io.log("range continue:", skipped)
+
+  var stop = 0
+  for i in range(1000) {
+    if i == 500 { break }
+    stop = stop + 1
+  }
+  io.log("range break:", stop)
+
+  var grid = 0
+  for a in range(60) {
+    for b in range(a, 60) {
+      grid = grid + 1
+    }
+  }
+  io.log("range nested:", grid)
+
+  if total == 1999000 && stepped == 735 && down == 22 && empty == 0 && skipped == 2500 && stop == 500 && grid == 1830 {
+    io.log("PASS range_loops")
+  } else {
+    io.log("FAIL range_loops")
+  }
+}

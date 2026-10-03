@@ -1,9 +1,0 @@
-
-val io = @import("std.io")
-val utils = @import("std.utils")
-
-fn main() {
-  io.log("A:", utils.now())
-  io.log("B:", utils.now())
-  io.log("C:", utils.now())
-}

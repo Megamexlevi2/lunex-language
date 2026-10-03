@@ -1,0 +1,97 @@
+val io = @import("std.io")
+val db = @import("std.db")
+
+fn main() {
+  val database = db.open("test_production_db")
+  val users = database.table("users")
+  val orders = database.table("orders")
+
+  users.drop()
+  orders.drop()
+
+  users.schema({
+    id: { type: "string", default: "$uuid" }
+    active: { type: "boolean", default: true }
+    legacyFlag: { type: "bool", default: false }
+    name: { type: "string", required: true }
+    email: { type: "string", required: true, unique: true }
+    age: { type: "number", default: 0 }
+  })
+
+  val alice = users.insert({ name: "Alice", email: "alice@example.com", age: 30 })
+  val foundAlice = users.findById(alice.id)
+  io.log("same_public_id:", foundAlice.id == foundAlice._id)
+  io.log("public_id_filter:", users.findOne({ _id: alice.id }).id == alice.id)
+  io.log("boolean_default:", foundAlice.active)
+  io.log("bool_alias_default:", foundAlice.legacyFlag)
+
+  val before = users.count()
+  var batchFailed = false
+  try {
+    users.insertMany([
+      { name: "Bob", email: "bob@example.com", age: 25 }
+      { name: "Carol", email: "bob@example.com", age: 35 }
+    ])
+  } catch (e) {
+    batchFailed = true
+  }
+  io.log("batch_failed:", batchFailed)
+  io.log("batch_rolled_back:", users.count() == before)
+
+  users.update({ id: alice.id }, { $inc: { age: 2 } })
+  users.update({ id: alice.id }, { $set: { active: false } })
+  val updated = users.findById(alice.id)
+  io.log("inc_works:", updated.age == 32)
+  io.log("set_works:", updated.active == false)
+  val filtered = users.where("age", ">", 20).orderBy("age", "desc").find()
+  io.log("three_arg_where_works:", filtered.length == 1 and filtered[0].id == alice.id)
+  val rangeExec = users.orderBy("age").where("age", ">=", 30).exec()
+  io.log("builder_exec_filter_works:", rangeExec.length == 1 and rangeExec[0].id == alice.id)
+
+  database.transaction(fn(tx) {
+    val txUsers = tx.table("users")
+    txUsers.update({ id: alice.id }, { $inc: { age: 1 } })
+  })
+  io.log("transaction_committed:", users.findById(alice.id).age == 33)
+
+  var transactionFailed = false
+  try {
+    database.transaction(fn(tx) {
+      val txUsers = tx.table("users")
+      txUsers.update({ id: alice.id }, { $inc: { age: 10 } })
+      txUsers.update({ id: alice.id }, { $inc: { age: "invalid" } })
+    })
+  } catch (e) {
+    transactionFailed = true
+  }
+  io.log("transaction_failed:", transactionFailed)
+  io.log("transaction_rolled_back:", users.findById(alice.id).age == 33)
+
+  orders.schema({
+    id: { type: "string", default: "$uuid" }
+    userId: { type: "string", required: true }
+    total: { type: "number", required: true }
+  })
+  orders.insert({ userId: alice.id, total: 50 })
+  orders.insert({ userId: alice.id, total: 75 })
+
+  val joined = orders.join(users, "userId", "id", { as: "user", type: "left", single: true })
+  io.log("join_works:", joined.length == 2 and joined[0].user.id == alice.id)
+
+  val grouped = users.aggregate([
+    { $group: { _id: "$active", total: { $count: {} } } }
+  ])
+  io.log("group_id_works:", grouped.length == 1)
+
+  val persistedCount = users.count()
+  database.close()
+  val reopened = db.open("test_production_db")
+  val reopenedUsers = reopened.table("users")
+  val reopenedAlice = reopenedUsers.findById(alice.id)
+  io.log("reopen_after_close_works:", reopenedUsers.count() == persistedCount and reopenedAlice.id == reopenedAlice._id)
+
+  reopenedUsers.drop()
+  reopened.table("orders").drop()
+  reopened.close()
+  io.log("PASS db_production")
+}

@@ -1,6 +1,6 @@
 # Language Reference
 
-Complete reference for the Lunex programming language, version 0.9.2.
+Complete reference for the Lunex programming language, version 0.9.3.
 
 ---
 
@@ -9,7 +9,7 @@ Complete reference for the Lunex programming language, version 0.9.2.
 ### Comments
 
 ```lx
-// single-line comment
+
 ```
 
 ### Identifiers
@@ -24,7 +24,7 @@ myVar   _private   score99   HTTP_PORT
 ### Keywords
 
 ```
-val var fn struct if else elif guard unless while each in for
+val var fn struct if else elif guard unless while watch each in for
 loop repeat do break continue match case default when defer spawn channel
 try catch finally throw raise enum namespace component import export from
 require module as extends new this super interface implements trait typeof
@@ -33,8 +33,6 @@ between matches startsWith endsWith select macro immutable freeze with
 using assert delete use satisfies readonly private public protected static
 abstract override get set null true false
 ```
-
-
 
 Not every keyword above has full runtime support; some are recognized by
 the parser but only partially implemented, or reserved for future use. The
@@ -121,12 +119,12 @@ Lunex is dynamically typed. The runtime types are:
 Use `typeof(v)` anywhere to inspect a value's type at runtime:
 
 ```lx
-typeof("hello")  // "string"
-typeof(42)       // "number"
-typeof(true)     // "boolean"
-typeof(null)     // "null"
-typeof([])       // "array"
-typeof({})       // "object"
+typeof("hello")  
+typeof(42)       
+typeof(true)     
+typeof(null)     
+typeof([])       
+typeof({})       
 ```
 
 ---
@@ -136,27 +134,27 @@ typeof({})       // "object"
 ### Arithmetic
 
 ```lx
-a + b    // addition (also string concatenation)
-a - b    // subtraction
-a * b    // multiplication
-a / b    // division
-a % b    // modulo
+a + b    
+a - b    
+a * b    
+a / b    
+a % b    
 ```
 
 ### Comparison
 
 ```lx
-a == b   // equal
-a != b   // not equal
+a == b   
+a != b   
 a < b    a > b    a <= b    a >= b
 ```
 
 ### Logical
 
 ```lx
-a && b   // AND — short-circuits
-a || b   // OR  — short-circuits
-!a       // NOT
+a && b   
+a || b   
+!a       
 ```
 
 ### Bitwise
@@ -164,13 +162,13 @@ a || b   // OR  — short-circuits
 Bitwise operators treat both operands as 64-bit integers.
 
 ```lx
-a & b    // AND
-a | b    // OR
-a ^ b    // XOR
-~a       // NOT
-a << b   // left shift
-a >> b   // signed right shift
-a >>> b  // unsigned right shift
+a & b    
+a | b    
+a ^ b    
+~a       
+a << b   
+a >> b   
+a >>> b  
 ```
 
 For overflow behavior that matches C's fixed-width integer types (`uint8_t`,
@@ -179,9 +177,9 @@ For overflow behavior that matches C's fixed-width integer types (`uint8_t`,
 ### Assignment
 
 ```lx
-x = expr          // reassign a var binding
-obj.field = expr  // set an object or struct field
-arr[i] = expr     // set an array element
+x = expr          
+obj.field = expr  
+arr[i] = expr     
 ```
 
 ---
@@ -203,13 +201,13 @@ These are available everywhere without an import:
 | `channel()`       | Create an unbuffered concurrent channel       |
 
 ```lx
-str(42)          // "42"
-str(true)        // "true"
-num("3.14")      // 3.14
-typeof("hello")  // "string"
-parseInt("10")   // 10
-isNaN(0 / 0)     // true
-len([1, 2, 3])   // 3
+str(42)          
+str(true)        
+num("3.14")      
+typeof("hello")  
+parseInt("10")   
+isNaN(0 / 0)     
+len([1, 2, 3])   
 ```
 
 ### JavaScript-compatibility globals
@@ -221,7 +219,9 @@ reserved names — but a few have limited or stubbed behavior, noted below.
 | Global                    | Description                                             |
 |------------------------------|-----------------------------------------------------------|
 | `String(v)` / `Number(v)` / `Boolean(v)` | Type-conversion functions, similar to `str`/`num`   |
-| `print(...)` / `log(...)`      | Print values to stdout (like `io.log`)                     |
+| `io.log(...)`                 | Log values to stdout through `std.io`                      |
+
+Global `print(...)`, `println(...)`, and `log(...)` output functions are not part of the Lunex language. Use `val io = @import("std.io")` followed by `io.log(...)`.
 | `Array`                          | Array constructor/statics (e.g. `Array.isArray`)             |
 | `Object`                          | Object statics (e.g. `Object.keys`, `Object.values`)            |
 | `Math`                              | A JS-style `Math` object, independent from `std.math`             |
@@ -308,7 +308,7 @@ fn makeAdder(n) {
 }
 
 val add5 = makeAdder(5)
-io.log(add5(10))  // 15
+io.log(add5(10))  
 ```
 
 ---
@@ -376,7 +376,7 @@ fn process(user) {
   guard user != null else {
     io.err("no user — skipping")
   }
-  // execution continues here either way
+  
   io.log("processing:", user)
 }
 ```
@@ -502,9 +502,49 @@ repeat 5 {
 }
 
 repeat {
-  // runs until a `break`
+  
 }
 ```
+
+### `watch`
+
+`watch` registers a reactive block that runs when the value of a variable or member expression changes. The block does not run when it is registered; it runs after a later assignment produces a different value.
+
+```lx
+var counter = 0
+
+watch counter {
+  io.log("Counter changed: " + counter)
+}
+
+counter = 10
+counter = 20
+```
+
+Output:
+
+```text
+Counter changed: 10
+Counter changed: 20
+```
+
+Member expressions are supported as well:
+
+```lx
+val user = struct {
+  name = "Alice"
+}
+
+watch user.name {
+  io.log("Name: " + user.name)
+}
+
+user.name = "Bob"
+```
+
+A `watch` target must be an identifier or a member expression. The watched value is captured when the watcher is registered and compared after Lunex assignments.
+
+---
 
 ### `loop`
 
@@ -545,10 +585,10 @@ No import needed — arrays have these built in:
 
 ```lx
 val nums = [3, 1, 4, 1, 5, 9, 2, 6]
-io.log(nums.sort())                              // [1, 1, 2, 3, 4, 5, 6, 9]
-io.log(nums.filter(fn(x) { x > 4 }))           // [5, 9, 6]
-io.log(nums.map(fn(x) { x * 2 }))              // [6, 2, 8, 2, 10, 18, 4, 12]
-io.log(nums.reduce(fn(acc, x) { acc + x }, 0)) // 31
+io.log(nums.sort())                              
+io.log(nums.filter(fn(x) { x > 4 }))           
+io.log(nums.map(fn(x) { x * 2 }))              
+io.log(nums.reduce(fn(acc, x) { acc + x }, 0)) 
 ```
 
 ---
@@ -576,10 +616,10 @@ No import needed — strings have these built in:
 | `s.repeat(n)`              | string  | Repeat the string n times                      |
 
 ```lx
-"  hello  ".trim()              // "hello"
-"lunex".toUpperCase()           // "LUNEX"
-"hello world".includes("world") // true
-"hello".split("")               // ["h","e","l","l","o"]
+"  hello  ".trim()              
+"lunex".toUpperCase()           
+"hello world".includes("world") 
+"hello".split("")               
 ```
 
 ---
@@ -603,7 +643,7 @@ fn Counter(start) {
 val c = Counter(0)
 c.inc()
 c.inc()
-io.log(c.value())  // 2
+io.log(c.value())  
 ```
 
 Plain assignments inside a `struct` body become fields. Methods can reference
@@ -623,7 +663,7 @@ fn Animal(name, sound) {
 }
 
 val cat = Animal("Cat", "Meow")
-io.log(cat.speak())  // Cat says Meow
+io.log(cat.speak())  
 ```
 
 You can also create simple structs inline without a factory function:
@@ -633,7 +673,7 @@ val user = struct {
   name = "Alice"
   role = "admin"
 }
-io.log(user.name)  // Alice
+io.log(user.name)  
 ```
 
 ---
@@ -724,19 +764,19 @@ Lunex doesn't implicitly coerce between types. Use the global built-in
 functions for explicit conversions:
 
 ```lx
-str(42)           // "42"
-str(true)         // "true"
-num("3.14")       // 3.14
-parseInt("10")    // 10
-parseFloat("1.5") // 1.5
+str(42)           
+str(true)         
+num("3.14")       
+parseInt("10")    
+parseFloat("1.5") 
 ```
 
 String concatenation with `+` does coerce the right-hand side to a string when
 the left-hand side is a string:
 
 ```lx
-"score: " + 99    // "score: 99"
-"items: " + 5     // "items: 5"
+"score: " + 99    
+"items: " + 5     
 ```
 
 ---

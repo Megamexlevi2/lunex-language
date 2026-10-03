@@ -18,6 +18,18 @@ fn main() {
   io.log("total:", products.count())
   io.log("count_25:", products.count({ price: 25 }))
 
+  val greaterThan = products.where("price", ">", 10).find()
+  io.log("where_gt_count:", greaterThan.length == 2)
+
+  val ordered = products.orderBy("price", "desc").where("price", ">=", 25).find()
+  io.log("builder_find_count:", ordered.length == 2)
+
+  val orderedExec = products.where("price", ">", 10).orderBy("price").exec()
+  io.log("builder_exec_count:", orderedExec.length == 2)
+
+  val invalidFilter = products.find("invalid")
+  io.log("invalid_filter_count:", invalidFilter.length == 0)
+
   products.clear()
   io.log("PASS db_query")
 }

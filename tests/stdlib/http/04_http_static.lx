@@ -1,0 +1,58 @@
+val io     = @import("std.io")
+val http   = @import("std.http")
+val router = @import("std.http.router")
+val files  = @import("std.http.static")
+val fs     = @import("std.fs")
+val os     = @import("std.os")
+
+fn check(condition, label) {
+  if !condition {
+    throw "FAIL " + label
+  }
+}
+
+fn main() {
+  val root = "./.lunex_http_static_test"
+  fs.deleteAll(root)
+  fs.mkdir(root)
+  fs.mkdir(root + "/sub")
+  fs.writeFile(root + "/index.html", "<h1>home</h1>")
+  fs.writeFile(root + "/app.css", "body{}")
+  fs.writeFile(root + "/sub/data.json", "{\"a\":1}")
+  fs.writeFile(root + "/.secret", "hidden")
+  fs.writeFile("./.lunex_http_static_outside.txt", "outside")
+
+  val serve = files.create(root, { prefix: "/assets", maxAge: 60 })
+  val api = router.create([
+    router.get("/assets", serve),
+    router.get("/assets/*", serve),
+    router.head("/assets/*", serve)
+  ])
+
+  val server = http.createServer(api.handle)
+  server.listen(39220, "127.0.0.1")
+  os.sleep(150)
+  val base = "http://127.0.0.1:39220"
+
+  val home = http.get(base + "/assets/")
+  check(home.status == 200 && home.text == "<h1>home</h1>", "index served")
+  check(home.headers["content-type"].startsWith("text/html"), "html content type")
+
+  val css = http.get(base + "/assets/app.css")
+  check(css.status == 200 && css.headers["content-type"].startsWith("text/css"), "css")
+  check(css.headers["cache-control"] == "public, max-age=60", "cache control")
+
+  val nested = http.get(base + "/assets/sub/data.json")
+  check(nested.json().a == 1, "nested file")
+
+  check(http.get(base + "/assets/missing.txt").status == 404, "missing file")
+  check(http.get(base + "/assets/.secret").status == 404, "dotfile denied")
+  check(http.get(base + "/assets/%2e%2e/lunex_http_static_outside.txt").status == 404, "encoded traversal denied")
+  check(http.get(base + "/assets/..%2Flunex_http_static_outside.txt").status == 404, "encoded slash traversal denied")
+  check(http.get(base + "/assets/sub/..%5C..%5Cx").status == 404, "backslash traversal denied")
+
+  server.close()
+  fs.deleteAll(root)
+  fs.delete("./.lunex_http_static_outside.txt")
+  io.log("PASS http_static")
+}

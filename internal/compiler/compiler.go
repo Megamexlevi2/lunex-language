@@ -184,6 +184,22 @@ func (c *Compiler) RunAST(tree *ast.Node, filename, source string) error {
 	return nil
 }
 
+func (c *Compiler) RunOptimizedAST(tree *ast.Node, filename string) error {
+	c.interp.SetFilename(filename)
+	c.interp.SetSourceLines(nil)
+	_, execErr := c.interp.ExecTrusted(tree)
+	if execErr != nil {
+		c.printRuntimeError(execErr, filename, "")
+		return execErr
+	}
+	if mainErr := c.interp.CallMain(); mainErr != nil {
+		c.printRuntimeError(mainErr, filename, "")
+		return mainErr
+	}
+	c.interp.ProvideKeepAliveWait()
+	return nil
+}
+
 func (c *Compiler) printRuntimeError(err error, filename, source string) {
 	srcLines := strings.Split(source, "\n")
 	if lunexErr, ok := err.(*errfmt.LunexError); ok {
@@ -195,6 +211,19 @@ func (c *Compiler) printRuntimeError(err error, filename, source string) {
 		}
 		fmt.Fprint(os.Stderr, errfmt.Format(lunexErr))
 		return
+	}
+
+	if diagnostic, ok := err.(interface{ DiagnosticError() *errfmt.LunexError }); ok {
+		if lunexErr := diagnostic.DiagnosticError(); lunexErr != nil {
+			if len(lunexErr.Lines) == 0 {
+				lunexErr.Lines = srcLines
+			}
+			if lunexErr.File == "" {
+				lunexErr.File = filename
+			}
+			fmt.Fprint(os.Stderr, errfmt.Format(lunexErr))
+			return
+		}
 	}
 
 	msg := err.Error()

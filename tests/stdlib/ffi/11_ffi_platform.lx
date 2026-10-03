@@ -1,0 +1,35 @@
+val io = @import("std.io")
+val os = @import("std.os")
+val ffi = @import("std.ffi")
+
+fn check(condition, message) {
+  if !condition {
+    throw "FAIL " + message
+  }
+}
+
+fn main() {
+  check(ffi.enabled(), "FFI is not enabled")
+  val platform = os.platform()
+  check(platform == "linux" || platform == "darwin" || platform == "windows" || platform == "android", "unsupported FFI platform")
+
+  var path = undefined
+  if platform == "android" || platform == "linux" {
+    path = "libc.so"
+    if platform == "linux" {
+      path = "libc.so.6"
+    }
+  } elif platform == "darwin" {
+    path = "/usr/lib/libSystem.B.dylib"
+  } else {
+    path = "ucrtbase.dll"
+  }
+
+  val lib = ffi.load(path)
+  val strlen = lib.bind("strlen", "usize(cstring)")
+  check(strlen("platform") == 8, "cross-platform FFI call failed")
+  check(!ffi.symbol(lib, "strlen").isNull(), "cross-platform symbol lookup failed")
+  check(ffi.close(strlen), "function close failed")
+  check(ffi.close(lib), "library close failed")
+  io.log("PASS ffi_platform")
+}

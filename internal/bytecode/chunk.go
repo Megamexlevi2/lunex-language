@@ -1,6 +1,7 @@
 package bytecode
 
 import (
+	"lunex/internal/ast"
 	"strings"
 )
 
@@ -8,6 +9,8 @@ type Chunk struct {
 	Name       string
 	SourceFile string
 	SourceText string
+	AST        *ast.Node
+	Optimized  bool
 	SubChunks  []*Chunk
 }
 

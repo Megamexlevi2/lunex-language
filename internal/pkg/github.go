@@ -3,7 +3,6 @@ package pkg
 import (
 	"archive/zip"
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -42,22 +41,9 @@ type githubClient struct {
 }
 
 func newGitHubClient() *githubClient {
-	resolver := &net.Resolver{
-		PreferGo: true,
-		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
-			d := net.Dialer{Timeout: 10 * time.Second}
-			conn, err := d.DialContext(ctx, "tcp", "8.8.8.8:53")
-			if err != nil {
-				return d.DialContext(ctx, "tcp", address)
-			}
-			return conn, nil
-		},
-	}
-
 	dialer := &net.Dialer{
 		Timeout:   20 * time.Second,
 		KeepAlive: 30 * time.Second,
-		Resolver:  resolver,
 	}
 
 	transport := &http.Transport{

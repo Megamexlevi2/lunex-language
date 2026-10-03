@@ -5,7 +5,6 @@ import (
 	"math"
 	"math/rand"
 )
-//a
 
 func MathModule() *runtime.Value {
 	return runtime.ObjectVal(map[string]*runtime.Value{

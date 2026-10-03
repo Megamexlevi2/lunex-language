@@ -20,6 +20,10 @@ func EncodeExported(e *ExportedChunk) ([]byte, error) {
 	return encodeNCWithNTZ(chunk, nil)
 }
 
-func EncodeExportedWithAST(e *ExportedChunk, _ *ast.Node) ([]byte, error) {
+func EncodeExportedWithAST(e *ExportedChunk, tree *ast.Node) ([]byte, error) {
+	return EncodeExportedWithASTSource(e, tree)
+}
+
+func EncodeExportedWithASTSource(e *ExportedChunk, _ *ast.Node) ([]byte, error) {
 	return EncodeExported(e)
 }

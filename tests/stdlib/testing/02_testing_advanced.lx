@@ -1,0 +1,107 @@
+val testing = @import("std.testing")
+val fs = @import("std.fs")
+val io = @import("std.io")
+
+fn main() {
+  var beforeAllCount = 0
+  var afterAllCount = 0
+  var beforeCount = 0
+  var afterCount = 0
+  var retryCount = 0
+  val snapshotPath = "tests/stdlib/testing/.testing.snapshot"
+
+  testing.beforeAll(fn() {
+    beforeAllCount = beforeAllCount + 1
+    fs.delete(snapshotPath)
+  })
+
+  testing.beforeEach(fn() {
+    beforeCount = beforeCount + 1
+  })
+
+  testing.afterEach(fn() {
+    afterCount = afterCount + 1
+  })
+
+  testing.afterAll(fn() {
+    afterAllCount = afterAllCount + 1
+  })
+
+  testing.group("assertions", fn() {
+    testing.test("core", fn() {
+      testing.plan(7)
+      testing.ok(true)
+      testing.falsey(false)
+      testing.null(null)
+      testing.defined("value")
+      testing.length([1, 2, 3], 3)
+      testing.empty([])
+      testing.inRange(5, 1, 10)
+    }, { tags: ["unit"] })
+
+    testing.test("numbers and patterns", fn() {
+      testing.approx(0.1 + 0.2, 0.3, 0.000001)
+      testing.matchesPattern("Lunex", "^Lunex$")
+      val err = testing.raises(fn() {
+        throw { code: "E_INPUT", name: "InputError", message: "bad value" }
+      }, { code: "E_INPUT", name: "InputError" })
+      testing.equal(err.code, "E_INPUT")
+    }, { tags: ["unit"] })
+  })
+
+  testing.cases("double", [1, 2, 3], fn(value, index) {
+    testing.plan(2)
+    testing.equal(value * 2, (index + 1) * 2)
+    testing.defined(value)
+  }, { tags: ["cases"] })
+
+  testing.test("retry", fn() {
+    retryCount = retryCount + 1
+    if retryCount == 1 {
+      testing.fail("transient failure")
+    }
+    testing.ok(true)
+  }, { retries: 1, tags: ["retry"] })
+
+  testing.test("snapshot", fn() {
+    val value = { name: "Lunex", values: [1, 2, 3] }
+    testing.snapshot(value, snapshotPath, { update: true })
+    testing.snapshot(value, snapshotPath)
+  }, { tags: ["snapshot"] })
+
+  testing.test("todo", fn() {
+    testing.fail("expected pending behavior")
+  }, { todo: true, reason: "pending coverage" })
+
+  val listed = testing.list()
+  testing.type(listed, "array")
+  testing.equal(listed.length, 8)
+
+  val result = testing.run({ failOnFlaky: false })
+  testing.equal(result.total, 8)
+  testing.equal(result.passed, 7)
+  testing.equal(result.failed, 0)
+  testing.equal(result.todo, 1)
+  testing.equal(result.flaky, 1)
+  testing.ok(result.ok)
+  testing.equal(beforeCount, 9)
+  testing.equal(afterCount, 9)
+  testing.equal(beforeAllCount, 1)
+  testing.equal(afterAllCount, 1)
+
+  testing.clear()
+  testing.test("unit selection", fn() {
+    testing.ok(true)
+  }, { tags: ["unit"] })
+  testing.test("integration selection", fn() {
+    testing.fail("not selected")
+  }, { tags: ["integration"] })
+
+  val filtered = testing.run({ tags: ["unit"] })
+  testing.equal(filtered.total, 1)
+  testing.equal(filtered.passed, 1)
+  testing.ok(filtered.ok)
+
+  fs.delete(snapshotPath)
+  io.log("PASS std.testing advanced")
+}

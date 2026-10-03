@@ -9,20 +9,10 @@ import (
 
 var useColor = os.Getenv("NO_COLOR") == "" && os.Getenv("TERM") != "dumb"
 
-// termWidth is resolved once per error print via terminalWidth() rather
-// than looked up on every call, since stty size shells out to a
-// subprocess and error formatting can build many small strings in a
-// single call to Format.
 func terminalWidth() int {
 	return adaptor.TerminalWidth()
 }
 
-// wrapText wraps plain text (no ANSI codes) to the given width,
-// breaking on spaces and never mid-word. It's used for free-form
-// prose — messages, hints, notes — where breaking cleanly at a column
-// matters most on narrow phone terminals; the source-code frame in
-// buildSourceView is left alone since it must stay aligned with actual
-// column positions in the user's code.
 func wrapText(text string, width int) []string {
 	if width <= 0 {
 		return []string{text}
@@ -59,11 +49,6 @@ func wrapText(text string, width int) []string {
 	return lines
 }
 
-// wrapIndented wraps text to fit the terminal and re-joins it with a
-// hanging indent equal to len(prefix), so continuation lines line up
-// under the first word rather than under the left margin. prefix
-// itself may contain ANSI color codes; only its visible length (via
-// visibleLen) is used for alignment math.
 func wrapIndented(prefix, text string) string {
 	width := terminalWidth() - visibleLen(prefix)
 	if width < 20 {
@@ -81,10 +66,6 @@ func wrapIndented(prefix, text string) string {
 	return out
 }
 
-// visibleLen returns the length of s as it would appear on screen,
-// ignoring ANSI escape sequences produced by esc(). It assumes each
-// escape sequence has the form "\x1b[...m", which covers every color
-// helper in this file.
 func visibleLen(s string) int {
 	n := 0
 	inEscape := false
@@ -162,6 +143,7 @@ const (
 	KindEncoding    ErrorKind = "EncodingError"
 	KindRecursion   ErrorKind = "RecursionError"
 	KindConcurrency ErrorKind = "ConcurrencyError"
+	KindSemantic    ErrorKind = "SemanticError"
 	KindDeprecated  ErrorKind = "DeprecationWarning"
 	KindStyle       ErrorKind = "StyleWarning"
 	KindSuspect     ErrorKind = "SuspectError"
@@ -195,6 +177,7 @@ var kindRegistry = map[ErrorKind]kindMeta{
 	KindEncoding:    {"error[encoding]", SeverityError, errColor, "✗"},
 	KindRecursion:   {"error[recursion]", SeverityError, errColor, "✗"},
 	KindConcurrency: {"error[concurrency]", SeverityError, errColor, "✗"},
+	KindSemantic:    {"error[semantic]", SeverityError, errColor, "✗"},
 	KindDeprecated:  {"warning[deprecated]", SeverityWarning, warnColor, "⚠"},
 	KindStyle:       {"warning[style]", SeverityWarning, warnColor, "⚠"},
 	KindSuspect:     {"error[suspect]", SeverityError, warnColor, "⚠"},
@@ -207,125 +190,114 @@ type codeDisplay struct {
 }
 
 var codeRegistry = map[string]codeDisplay{
-	"E0001":          {"E0001", "undefined variable", "not found in scope"},
-	"E0002":          {"E0002", "undefined method", "method not found on this type"},
-	"E0003":          {"E0003", "value is not callable", "not a function — cannot call"},
-	"E0004":          {"E0004", "null or undefined access", "value is null — property does not exist"},
-	"E0005":          {"E0005", "cannot reassign immutable binding", "declared as `val` — immutable"},
-	"E0006":          {"E0006", "undefined field", "field not found on this type"},
-	"E0010":          {"E0010", "module not found", "unresolved module path"},
-	"E0010F":         {"E0010F", "local file not found", "unresolved local path"},
-	"E0011":          {"E0011", "module has a syntax error", "syntax error in module"},
-	"E0012":          {"E0012", "circular import detected", "circular dependency — cycle in import graph"},
-	"E0013":          {"E0013", "module failed to load", "error while loading module"},
-	"E0014":          {"E0014", "module is internal", "internal module — cannot be imported by user code"},
-	"E0015":          {"E0015", "binary module load failed", "cannot decode .nax or .nax file"},
-	"E0020":          {"E0020", "type mismatch", "incompatible types"},
-	"E0021":          {"E0021", "wrong number of arguments", "arity mismatch"},
-	"E0022":          {"E0022", "invalid argument type", "expected a different type here"},
-	"E0023":          {"E0023", "return type mismatch", "returned type does not match the function signature"},
-	"E0024":          {"E0024", "operator not defined for this type", "no operator implementation for this type"},
-	"E0025":          {"E0025", "cannot coerce value to target type", "implicit coercion failed"},
-	"E0030":          {"E0030", "division by zero", "divisor is zero"},
-	"E0031":          {"E0031", "integer overflow", "value exceeds numeric bounds"},
-	"E0032":          {"E0032", "result is NaN or Inf", "not-a-number or infinite result"},
-	"E0040":          {"E0040", "index out of bounds", "index exceeds array or string length"},
-	"E0041":          {"E0041", "invalid slice range", "start > end or negative index"},
-	"E0050":          {"E0050", "unexpected token", "token not expected here"},
-	"E0051":          {"E0051", "unexpected end of file", "file ended before the expression was complete"},
-	"E0052":          {"E0052", "unclosed block or delimiter", "add the matching closing `}`"},
-	"E0053":          {"E0053", "invalid escape sequence", "unrecognized escape sequence in string"},
-	"E0054":          {"E0054", "invalid number literal", "malformed numeric literal"},
-	"E0055":          {"E0055", "duplicate key in object literal", "key already defined"},
-	"E0060":          {"E0060", "stack overflow", "maximum call depth exceeded"},
-	"E0061":          {"E0061", "assertion failed", "assertion evaluated to false"},
-	"E0062":          {"E0062", "explicit panic", "user-triggered panic"},
-	"E0063":          {"E0063", "I/O operation failed", "I/O error"},
-	"E0064":          {"E0064", "permission denied", "insufficient permissions"},
-	"E0065":          {"E0065", "operation timed out", "deadline exceeded"},
-	"E0066":          {"E0066", "network error", "network unreachable or connection refused"},
-	"E0067":          {"E0067", "encoding error", "byte sequence is not valid UTF-8"},
-	"E0068":          {"E0068", "memory allocation failed", "out of memory"},
-	"E0069":          {"E0069", "concurrent write detected", "data race on shared value"},
-	"W0001":          {"W0001", "use of deprecated symbol", "deprecated — will be removed in a future release"},
-	"W0002":          {"W0002", "shadowed variable", "this declaration shadows an outer binding"},
-	"W0003":          {"W0003", "unreachable code", "code after this point is never executed"},
-	"W0004":          {"W0004", "unused variable", "declared but never used"},
-	"W0005":          {"W0005", "implicit type coercion", "implicit coercion may lose precision"},
-	"W0006":          {"W0006", "multiple statements on one line", "split each statement onto its own line"},
-	"W0007":          {"W0007", "missing spacing", "add spaces around operators and after commas"},
-	"W0008":          {"W0008", "missing space before `{`", "add a space before the opening brace"},
-	"W0009":          {"W0009", "semicolon used as separator", "use newlines instead of semicolons"},
-	"W0010":          {"W0010", "minified or single-line program", "expand the program across multiple lines"},
-	"E0070":          {"E0070", "missing entry point", "`fn main()` is required"},
-	"E0071":          {"E0071", "top-level statement not allowed", "only declarations are allowed at the top level"},
-	"E0072":          {"E0072", "explicit main() call not allowed", "`main` is called automatically by the runtime"},
-	"E0073":          {"E0073", "reserved keyword used as identifier", "this name is a Lunex reserved keyword"},
-	"E0074":          {"E0074", "redeclaration of built-in", "shadows a built-in function or constant"},
-	"E0075":          {"E0075", "invalid identifier name", "identifiers must start with a letter or underscore"},
-	"E0076":          {"E0076", "reserved keyword as parameter name", "keyword cannot be used as a parameter"},
-	"E0077":          {"E0077", "reserved keyword as field name", "keyword cannot be used as a field name"},
-	"E0078":          {"E0078", "operator not defined for these types", "no implementation for this type combination"},
-	"E0079":          {"E0079", "expression produced undefined", "sub-expression evaluated to undefined"},
-	"S0001":          {"S0001", "for-of over non-iterable", "value is not iterable"},
-	"S0002":          {"S0002", "match produced no result", "no arm matched — add a default case"},
-	"S0003":          {"S0003", "arithmetic produced NaN", "operand is not a valid number"},
-	"S0004":          {"S0004", "array index out of bounds", "index is outside the valid range"},
-	"S0005":          {"S0005", "spread of non-iterable", "value cannot be spread"},
-	"S0006":          {"S0006", "spread of null or undefined", "spread target is null or undefined"},
-	"S0007":          {"S0007", "call on undefined return", "function returned undefined"},
-	"UNDEF_VAR":      {"UNDEF_VAR", "undefined variable", "not declared in this scope"},
-	"UNDEF_FUNC":     {"UNDEF_FUNC", "undefined function", "not defined in this scope"},
-	"UNDEF_MOD":      {"UNDEF_MOD", "unresolved module", "module not found"},
-	"CONST_REASSIGN": {"CONST_REASSIGN", "assignment to immutable binding", "`val` binding — cannot reassign"},
-	"NOT_FUNCTION":   {"NOT_FUNCTION", "not a callable value", "not a function"},
-	"NULL_ACCESS":    {"NULL_ACCESS", "null dereference", "value is null or undefined"},
+	"E0001":  {"E0001", "undefined variable", "not found in scope"},
+	"E0002":  {"E0002", "undefined method", "method not found on this type"},
+	"E0003":  {"E0003", "value is not callable", "not a function — cannot call"},
+	"E0004":  {"E0004", "null or undefined access", "value is null — property does not exist"},
+	"E0005":  {"E0005", "cannot reassign immutable binding", "declared as `val` — immutable"},
+	"E0006":  {"E0006", "undefined field", "field not found on this type"},
+	"E0010":  {"E0010", "module not found", "unresolved module path"},
+	"E0010F": {"E0010F", "local file not found", "unresolved local path"},
+	"E0011":  {"E0011", "module has a syntax error", "syntax error in module"},
+	"E0012":  {"E0012", "circular import detected", "circular dependency — cycle in import graph"},
+	"E0013":  {"E0013", "module failed to load", "error while loading module"},
+	"E0014":  {"E0014", "module is internal", "internal module — cannot be imported by user code"},
+	"E0015":  {"E0015", "binary module load failed", "cannot decode .nax or .nax file"},
+	"E0020":  {"E0020", "type mismatch", "incompatible types"},
+	"E0021":  {"E0021", "wrong number of arguments", "arity mismatch"},
+	"E0022":  {"E0022", "invalid argument type", "expected a different type here"},
+	"E0023":  {"E0023", "return type mismatch", "returned type does not match the function signature"},
+	"E0024":  {"E0024", "operator not defined for this type", "no operator implementation for this type"},
+	"E0025":  {"E0025", "cannot coerce value to target type", "implicit coercion failed"},
+	"E0030":  {"E0030", "division by zero", "divisor is zero"},
+	"E0031":  {"E0031", "integer overflow", "value exceeds numeric bounds"},
+	"E0032":  {"E0032", "result is NaN or Inf", "not-a-number or infinite result"},
+	"E0040":  {"E0040", "index out of bounds", "index exceeds array or string length"},
+	"E0041":  {"E0041", "invalid slice range", "start > end or negative index"},
+	"E0050":  {"E0050", "unexpected token", "token not expected here"},
+	"E0051":  {"E0051", "unexpected end of file", "file ended before the expression was complete"},
+	"E0052":  {"E0052", "unclosed block or delimiter", "add the matching closing `}`"},
+	"E0053":  {"E0053", "invalid escape sequence", "unrecognized escape sequence in string"},
+	"E0054":  {"E0054", "invalid number literal", "malformed numeric literal"},
+	"E0055":  {"E0055", "duplicate key in object literal", "key already defined"},
+	"E0060":  {"E0060", "stack overflow", "maximum call depth exceeded"},
+	"E0061":  {"E0061", "assertion failed", "assertion evaluated to false"},
+	"E0062":  {"E0062", "explicit panic", "user-triggered panic"},
+	"E0063":  {"E0063", "I/O operation failed", "I/O error"},
+	"E0064":  {"E0064", "permission denied", "insufficient permissions"},
+	"E0065":  {"E0065", "operation timed out", "deadline exceeded"},
+	"E0066":  {"E0066", "network error", "network unreachable or connection refused"},
+	"E0067":  {"E0067", "encoding error", "byte sequence is not valid UTF-8"},
+	"E0068":  {"E0068", "memory allocation failed", "out of memory"},
+	"E0069":  {"E0069", "concurrent write detected", "data race on shared value"},
+	"W0001":  {"W0001", "use of deprecated symbol", "deprecated — will be removed in a future release"},
+	"W0002":  {"W0002", "shadowed variable", "this declaration shadows an outer binding"},
+	"W0003":  {"W0003", "unreachable code", "code after this point is never executed"},
+	"W0004":  {"W0004", "unused variable", "declared but never used"},
+	"W0005":  {"W0005", "implicit type coercion", "implicit coercion may lose precision"},
+	"W0006":  {"W0006", "multiple statements on one line", "split each statement onto its own line"},
+	"W0007":  {"W0007", "missing spacing", "add spaces around operators and after commas"},
+	"W0008":  {"W0008", "missing space before `{`", "add a space before the opening brace"},
+	"W0009":  {"W0009", "semicolon used as separator", "use newlines instead of semicolons"},
+	"W0010":  {"W0010", "minified or single-line program", "expand the program across multiple lines"},
+	"E0070":  {"E0070", "missing entry point", "`fn main()` is required"},
+	"E0071":  {"E0071", "top-level statement not allowed", "only declarations are allowed at the top level"},
+	"E0072":  {"E0072", "explicit main() call not allowed", "`main` is called automatically by the runtime"},
+	"E0073":  {"E0073", "reserved keyword used as identifier", "this name is a Lunex reserved keyword"},
+	"E0074":  {"E0074", "redeclaration of built-in", "shadows a built-in function or constant"},
+	"E0075":  {"E0075", "invalid identifier name", "identifiers must start with a letter or underscore"},
+	"E0076":  {"E0076", "reserved keyword as parameter name", "keyword cannot be used as a parameter"},
+	"E0077":  {"E0077", "reserved keyword as field name", "keyword cannot be used as a field name"},
+	"E0078":  {"E0078", "operator not defined for these types", "no implementation for this type combination"},
+	"E0079":  {"E0079", "expression produced undefined", "sub-expression evaluated to undefined"},
+	"E0080":  {"E0080", "legacy output function", "use std.io and call io.log(...)"},
+	"E0432":  {"E0432", "unresolved export", "export a declared or imported name"},
+	"E0110":  {"E0110", "required environment variable is not set", "env.require could not find the requested variable"},
+	"E0111":  {"E0111", "environment file operation failed", "dotenv file could not be loaded or applied"},
+	"E0112":  {"E0112", "NAX pack pipeline rejected the artifact", "source validation must succeed before archive emission"},
+	"E0113":  {"E0113", "malformed JSON text", "std.json.parse could not make sense of the input at this position"},
+	"E0114":  {"E0114", "circular structure in JSON output", "std.json.stringify cannot serialize a self-referencing value"},
+	"E0115":  {"E0115", "JSON file operation failed", "std.json could not read or write the requested file"},
+	"E0116":  {"E0116", "JSON value nested too deeply", "std.json refused to parse or serialize past the depth limit"},
+	"E0120":  {"E0120", "native FFI is disabled", "enable FFI with the CLI-only `ffi = on` prefix"},
+	"E0121":  {"E0121", "invalid FFI library path", "provide a non-empty native library path"},
+	"E0122":  {"E0122", "native library load failed", "check the library path, architecture, dependencies, and loader rules"},
+	"E0123":  {"E0123", "native symbol not found", "check the exported symbol name and ABI"},
+	"E0124":  {"E0124", "native resource is closed", "keep the library or bound function open while it is in use"},
+	"E0125":  {"E0125", "invalid FFI operation", "check the FFI function arguments and call shape"},
+	"E0126":  {"E0126", "invalid FFI signature", "use `returnType(argType, ...)` or a valid descriptor object"},
+	"E0127":  {"E0127", "unsupported FFI type", "use one of the supported scalar, pointer, array, or struct types"},
+	"E0128":  {"E0128", "native call preparation failed", "verify the ABI declaration before calling the symbol"},
+	"E0129":  {"E0129", "native callback creation failed", "use callback-compatible argument and return types"},
+	"E0130":  {"E0130", "native memory allocation failed", "check native allocation size and available memory"},
+	"E0131":  {"E0131", "invalid FFI value", "provide a value compatible with the declared native type"},
+	"E0132":  {"E0132", "native memory bounds error", "keep reads and writes inside the known allocation length"},
+	"E0133":  {"E0133", "invalid FFI option syntax", "use `ffi = on` or `ffi = off` before the Lunex command"},
+	"S0001":  {"S0001", "for-of over non-iterable", "value is not iterable"},
+	"S0002":  {"S0002", "match produced no result", "no arm matched — add a default case"},
+	"S0003":  {"S0003", "arithmetic produced NaN", "operand is not a valid number"},
+	"S0004":  {"S0004", "array index out of bounds", "index is outside the valid range"},
+	"S0005":  {"S0005", "spread of non-iterable", "value cannot be spread"},
+	"S0006":  {"S0006", "spread of null or undefined", "spread target is null or undefined"},
+	"S0007":  {"S0007", "call on undefined return", "function returned undefined"},
 }
 
 const (
-	ErrUndefinedVar    = "E0001"
-	ErrUndefinedFunc   = "E0002"
-	ErrConstReassign   = "E0003"
-	ErrNotCallable     = "E0004"
-	ErrNullAccess      = "E0005"
-	ErrDivisionByZero  = "E0006"
-	ErrTypeMismatch    = "E0007"
-	ErrModuleNotFound  = "E0008"
-	ErrIndexOutOfRange = "E0009"
-	ErrStackOverflow   = "E0010"
-	ErrInvalidArg      = "E0011"
-	ErrUnexpectedToken = "E0012"
-	ErrMissingToken    = "E0013"
-	ErrInvalidSyntax   = "E0014"
-	ErrDuplicateDecl   = "E0015"
-	ErrInvalidReturn   = "E0016"
-	ErrInvalidBreak    = "E0017"
-	ErrInvalidContinue = "E0018"
-	ErrCircularImport  = "E0019"
-	ErrIOFailure       = "E0020"
-	ErrAssertFailed    = "E0021"
-	ErrInvalidPattern  = "E0022"
-	ErrKeyNotFound     = "E0023"
-	ErrReadonly        = "E0024"
-	ErrNetworkFailure  = "E0025"
-	ErrTimeout         = "E0026"
-	ErrPermission      = "E0027"
-	ErrNotImplemented  = "E0028"
-	ErrDeadlock        = "E0029"
-	ErrInvalidRegex    = "E0030"
-	ErrParseJSON       = "E0031"
-	ErrParseXML        = "E0032"
-	ErrParseYAML       = "E0033"
-	ErrParseTOML       = "E0034"
-	ErrInvalidURL      = "E0035"
-	ErrInvalidEmail    = "E0036"
-	ErrCryptoFailure   = "E0037"
-	ErrDBConnection    = "E0038"
-	ErrDBQuery         = "E0039"
-	ErrAuthFailure     = "E0040"
-	ErrRateLimited     = "E0041"
-	ErrFileNotFound    = "E0042"
-	ErrInvalidFormat   = "E0043"
+	ErrDivisionByZero           = "E0030"
+	ErrTypeMismatch             = "E0020"
+	ErrStackOverflow            = "E0060"
+	ErrTimeout                  = "E0065"
+	ErrReservedKeyword          = "E0073"
+	ErrKeywordAsArg             = "E0076"
+	ErrKeywordAsField           = "E0077"
+	ErrPackPipeline             = "E0112"
+	ErrSuspectForOfNonIterable  = "S0001"
+	ErrSuspectMatchNoArm        = "S0002"
+	ErrSuspectNaNResult         = "S0003"
+	ErrSuspectIndexOutOfBounds  = "S0004"
+	ErrSuspectSpreadNonIterable = "S0005"
+	ErrSuspectNullSpread        = "S0006"
+	ErrSuspectCallUndefined     = "S0007"
 
 	ErrUnexpectedTokenGeneric = "E1000"
 	ErrUnexpectedComma        = "E1001"
@@ -335,32 +307,40 @@ const (
 	ErrUnexpectedAssign       = "E1005"
 	ErrUnexpectedSemicolon    = "E1006"
 	ErrExpectedToken          = "E1010"
-
-	ErrUnknownType        = "E0044"
-	ErrReturnTypeMismatch = "E0045"
-	ErrArgTypeMismatch    = "E0046"
-	ErrNullableViolation  = "E0047"
-	ErrUninitializedConst = "E0048"
-
-	ErrReservedKeyword          = "E0073"
-	ErrShadowedBuiltin          = "E0074"
-	ErrInvalidIdentifier        = "E0075"
-	ErrKeywordAsArg             = "E0076"
-	ErrKeywordAsField           = "E0077"
-	ErrUndefinedOperator        = "E0078"
-	ErrImplicitUndefined        = "E0079"
-	ErrSuspectForOfNonIterable  = "S0001"
-	ErrSuspectMatchNoArm        = "S0002"
-	ErrSuspectNaNResult         = "S0003"
-	ErrSuspectIndexOutOfBounds  = "S0004"
-	ErrSuspectSpreadNonIterable = "S0005"
-	ErrSuspectNullSpread        = "S0006"
-	ErrSuspectCallUndefined     = "S0007"
 )
 
 func LookupCode(code string) (codeDisplay, bool) {
 	ec, ok := codeRegistry[code]
 	return ec, ok
+}
+
+func KindForCode(code string) ErrorKind {
+	switch {
+	case strings.HasPrefix(code, "E005"), strings.HasPrefix(code, "E10"):
+		return KindParse
+	case strings.HasPrefix(code, "E040"), strings.HasPrefix(code, "E043"):
+		return KindImport
+	case strings.HasPrefix(code, "E041"), strings.HasPrefix(code, "E059"), strings.HasPrefix(code, "E002"):
+		return KindType
+	case code == "E0070", code == "E0071", code == "E0072", code == "E0073", code == "E0074", code == "E0075", code == "E0076", code == "E0077", code == "E0080":
+		return KindSyntax
+	case code == "E0060":
+		return KindRecursion
+	case code == "E0133":
+		return KindSyntax
+	case code == "E0120":
+		return KindPermission
+	case code == "E0121" || code == "E0122" || code == "E0123" || code == "E0124":
+		return KindImport
+	case code == "E0125" || code == "E0126" || code == "E0127" || code == "E0131":
+		return KindType
+	case code == "E0128" || code == "E0129" || code == "E0130" || code == "E0132":
+		return KindRuntime
+	case strings.HasPrefix(code, "S"):
+		return KindSuspect
+	default:
+		return KindReference
+	}
 }
 
 func CodeSuggestion(code string) string {
@@ -645,6 +625,8 @@ var knownStdlib = map[string]string{
 	"regex":    "std.regex",
 	"re":       "std.regex",
 	"env":      "std.env",
+	"ffi":      "std.ffi",
+	"testing":  "std.testing",
 	"utils":    "std.utils",
 	"json":     "std.json",
 	"path":     "std.path",
@@ -665,7 +647,7 @@ func buildSuggestions(code, name, msg string, similar []string) []string {
 	add := func(s string) { out = append(out, s) }
 
 	switch code {
-	case "E0001", "UNDEF_VAR":
+	case "E0001":
 		if stdlib, ok := knownStdlib[strings.ToLower(name)]; ok {
 			add("import it at the top:  val " + name + " = @import(\"" + stdlib + "\")")
 			return out
@@ -682,21 +664,21 @@ func buildSuggestions(code, name, msg string, similar []string) []string {
 		} else {
 			add("check the method name and the module's exported API")
 		}
-		add("use `@inspect(value)` to see available methods at runtime")
+		add("check the value type with `typeof(value)` and use the documented methods for that type")
 		return out
 
-	case "E0003", "NOT_FUNCTION":
+	case "E0003":
 		add("`" + name + "` is not a function — only values declared with `fn` are callable")
 		add("check that it was not accidentally overwritten or shadowed")
 		return out
 
-	case "E0004", "NULL_ACCESS":
+	case "E0004":
 		add("guard the value before accessing it:  if " + name + " != null { ... }")
 		add("use optional chaining:  " + name + "?.property")
 		add("provide a fallback:  " + name + " ?? defaultValue")
 		return out
 
-	case "E0005", "CONST_REASSIGN":
+	case "E0005":
 		add("use `var` instead of `val` for a mutable binding:  var " + name + " = <value>")
 		add("or introduce a new binding:  val " + name + "2 = newValue")
 		return out
@@ -708,7 +690,7 @@ func buildSuggestions(code, name, msg string, similar []string) []string {
 		}
 		return out
 
-	case "E0010", "UNDEF_MOD":
+	case "E0010":
 		add("for local files:   @fimport(\"./file.lx\")")
 		add("for stdlib:        @import(\"std.io\"), @import(\"std.fs\"), @import(\"std.http\"), ...")
 		add("for packages:      install with lunex-pm, then use @import(\"<pkg>\")")
@@ -740,13 +722,13 @@ func buildSuggestions(code, name, msg string, similar []string) []string {
 
 	case "E0015":
 		add("the file could not be decoded as a Lunex binary module")
-		add("accepted formats: .nax (built with `lunex pack`), .nax (built with `lunex build`)")
+		add("accepted format: .nax (built with `lunex pack`)")
 		add("rebuild the archive with `lunex pack <directory>` if it may be outdated")
 		return out
 
 	case "E0020":
 		add("add an explicit cast:  as<TargetType>(value)")
-		add("check the actual type with `@typeOf(value)`")
+		add("check the actual type with `typeof(value)`")
 		return out
 
 	case "E0021":
@@ -821,7 +803,7 @@ func buildSuggestions(code, name, msg string, similar []string) []string {
 
 	case "E0061":
 		add("review the condition that triggered the assertion failure")
-		add("use `@debug(value)` to inspect state before the assertion")
+		add("log the relevant value with `io.log(value)` after importing `std.io`")
 		return out
 
 	case "E0063":
@@ -918,17 +900,17 @@ func buildSuggestions(code, name, msg string, similar []string) []string {
 
 	case "S0001":
 		add("only arrays, strings, and objects are iterable with `for ... of`")
-		add("check the value type with `@typeOf(value)` before iterating")
+		add("check the value type with `typeof(value)` before iterating")
 		return out
 
 	case "S0002":
 		add("add a default arm to handle unmatched cases:")
-		add("  _ => { /* handle unexpected value */ }")
+		add("  _ => {  }")
 		return out
 
 	case "S0003":
 		add("one operand is likely undefined, null, or a non-numeric string")
-		add("use explicit conversion: Number(x)  or guard: if @typeOf(x) == \"number\" { ... }")
+		add("use explicit conversion: Number(x)  or guard: if typeof(x) == \"number\" { ... }")
 		return out
 
 	case "S0004":
@@ -975,7 +957,7 @@ func buildSuggestions(code, name, msg string, similar []string) []string {
 		return out
 
 	case "E0078":
-		add("check the types of both operands with `@typeOf(x)` before applying the operator")
+		add("check the types of both operands with `typeof(x)` before applying the operator")
 		add("use explicit conversion: Number(x), str(x), or bool(x)")
 		return out
 
@@ -983,6 +965,48 @@ func buildSuggestions(code, name, msg string, similar []string) []string {
 		add("a sub-expression evaluated to undefined — check all variables are initialized")
 		add("guard against undefined:  if x != null { ... }")
 		add("use optional chaining:  x?.property")
+		return out
+
+	case "E0080":
+		add("Lunex has no global print, println, or log output function")
+		add("import `std.io` and use `io.log(...)`")
+		return out
+
+	case "E0432":
+		add("export only declared or imported names")
+		return out
+
+	case "E0110":
+		add("define the variable in the environment before calling `env.require`")
+		add("use `env.get(\"KEY\", fallback)` when a missing variable should not be an error")
+		return out
+
+	case "E0111":
+		add("check that the dotenv file exists, is readable, and contains valid assignments")
+		add("use `env.config(path)` to inspect the parsed values and the returned error object")
+		return out
+
+	case "E0112":
+		add("resolve every lexer, parser, resolver, checker, or module-graph diagnostic before packing")
+		add("run `lunex check <file.lx>` to inspect the same semantic pipeline without emitting an archive")
+		return out
+
+	case "E0113":
+		add("check the line and column named in the message — that's exactly where the JSON text stops being valid")
+		add("use `std.json.isValid(text)` first if the input might not be well-formed JSON")
+		return out
+
+	case "E0114":
+		add("break the cycle before calling stringify, or provide a `toJSON()` that returns a plain, acyclic value")
+		add("pass a replacer function to `stringify` to drop or flatten the self-referencing field")
+		return out
+
+	case "E0115":
+		add("confirm the path exists, is readable or writable, and that the process has permission to access it")
+		return out
+
+	case "E0116":
+		add("flatten or restructure the value — std.json caps nesting at 512 levels to avoid a runaway parse or serialize")
 		return out
 	}
 
@@ -1010,7 +1034,7 @@ func buildSuggestions(code, name, msg string, similar []string) []string {
 		add("guard the value:  if x != null { ... }")
 		add("use optional chaining:  x?.property")
 	case strings.Contains(lower, "type"):
-		add("verify the value's type with `@typeOf(value)` and convert explicitly if needed")
+		add("verify the value's type with `typeof(value)` and convert explicitly if needed")
 	case strings.Contains(lower, "expected"):
 		add("review the syntax here — a keyword or delimiter may be missing")
 	}
@@ -1241,9 +1265,93 @@ func TypeError(msg, file string, line, col int, lines []string) *LunexError {
 	}
 }
 
+func TopLevelStatementError(kind, file string, line, col int, lines []string) *LunexError {
+	return &LunexError{
+		Message:    fmt.Sprintf("statement of type `%s` is not allowed at the top level", kind),
+		File:       file,
+		Line:       line,
+		Col:        col,
+		Kind:       KindSyntax,
+		Code:       "E0071",
+		Lines:      lines,
+		Notes:      []string{"only declarations (`fn`, `val`, `var`, `class`) and imports are allowed outside `main`"},
+		Suggestion: "move this code inside `fn main() { ... }`",
+	}
+}
+
+func TopLevelCallError(callee, file string, line, col int, lines []string) *LunexError {
+	suggestion := "move this call inside `fn main() { ... }`"
+	if callee != "" {
+		suggestion = "move `" + callee + "(...)` inside `fn main() { ... }`"
+	}
+	return &LunexError{
+		Message: fmt.Sprintf("function call `%s(...)` is not allowed at the top level", callee),
+		File:    file,
+		Line:    line,
+		Col:     col,
+		Kind:    KindSyntax,
+		Code:    "E0071",
+		Lines:   lines,
+		Notes: []string{
+			"top-level code is limited to declarations and imports",
+			"all executable logic must live inside `fn main()`",
+		},
+		Suggestion: suggestion,
+		ExBad:      "test()   top-level call not allowed",
+		ExGood:     "fn main() {\n  test()\n}",
+	}
+}
+
+func TopLevelAssignmentError(file string, line, col int, lines []string) *LunexError {
+	return &LunexError{
+		Message:    "top-level assignment is not allowed; use `val` or `var` instead",
+		File:       file,
+		Line:       line,
+		Col:        col,
+		Kind:       KindSyntax,
+		Code:       "E0071",
+		Lines:      lines,
+		Suggestion: "use a declaration:  val name = <value>",
+	}
+}
+
+func ExplicitMainCallError(file string, line, col int, lines []string) *LunexError {
+	return &LunexError{
+		Message: "explicit call to `main()` is not allowed",
+		File:    file,
+		Line:    line,
+		Col:     col,
+		Kind:    KindSyntax,
+		Code:    "E0072",
+		Lines:   lines,
+		Notes: []string{
+			"`main` is the entry point and Lunex calls it automatically",
+			"calling `main()` manually re-enters the program",
+		},
+		Suggestion: "remove the `main()` call; Lunex runs it automatically",
+	}
+}
+
+func MissingMainError(file string, lines []string) *LunexError {
+	return &LunexError{
+		Message: "entry point `main` is not defined",
+		File:    file,
+		Kind:    KindReference,
+		Code:    "E0070",
+		Lines:   lines,
+		Notes: []string{
+			"every Lunex program requires a `fn main()` entry point",
+			"top-level code outside `main` is not allowed in executable files",
+		},
+		Suggestion: "add a main function:\n\n  fn main() {\n    your code here\n  }",
+		ExGood:     "fn main() {\n  val io = @import(\"std.io\")\n  io.log(\"hello\")\n}",
+		ExBad:      "val io = @import(\"std.io\")\nio.log(\"hello\")",
+	}
+}
+
 func ReferenceError(name, file string, line, col int, lines []string) *LunexError {
 	return &LunexError{
-		Message: fmt.Sprintf("'%s' is not defined", name),
+		Message: fmt.Sprintf("variable `%s` was not defined", name),
 		File:    file,
 		Line:    line,
 		Col:     col,
@@ -1255,7 +1363,7 @@ func ReferenceError(name, file string, line, col int, lines []string) *LunexErro
 
 func ReferenceErrorWithSimilar(name, file string, line, col int, lines []string, similar []string) *LunexError {
 	return &LunexError{
-		Message: fmt.Sprintf("'%s' is not defined", name),
+		Message: fmt.Sprintf("variable `%s` was not defined", name),
 		File:    file,
 		Line:    line,
 		Col:     col,
@@ -1329,6 +1437,18 @@ func CircularImportError(mod, file string, line int) *LunexError {
 		Line:    line,
 		Kind:    KindImport,
 		Code:    "E0012",
+	}
+}
+
+func UnresolvedExportError(name, file string, line, col int, lines []string) *LunexError {
+	return &LunexError{
+		Message: fmt.Sprintf("unresolved export `%s`", name),
+		File:    file,
+		Line:    line,
+		Col:     col,
+		Kind:    KindImport,
+		Code:    "E0432",
+		Lines:   lines,
 	}
 }
 

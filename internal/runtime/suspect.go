@@ -84,7 +84,7 @@ func (interp *Interpreter) CheckMatchResult(subject *Value, node *ast.Node) (*Va
 		errfmt.ErrSuspectMatchNoArm,
 		fmt.Sprintf("no `match` arm matched the subject value `%s`", subjectStr),
 		node,
-		"add a default (catch-all) arm:  _ => { /* handle unexpected value */ }",
+		"add a default (catch-all) arm:  _ => {  }",
 		fmt.Sprintf("subject type is `%s`", subject.TypeName()),
 		"without a default arm, a missed match silently returns undefined",
 	)
@@ -104,7 +104,7 @@ func (interp *Interpreter) CheckNaNResult(result float64, op string, left, right
 		errfmt.ErrSuspectNaNResult,
 		fmt.Sprintf("arithmetic operation `%s` produced NaN: left=%s, right=%s", op, leftDesc, rightDesc),
 		node,
-		"use explicit conversion before arithmetic:  Number(x)  or guard with:  if @typeOf(x) == \"number\" { ... }",
+		"use explicit conversion before arithmetic:  Number(x)  or guard with:  if typeof(x) == \"number\" { ... }",
 		"NaN silently propagates — all further arithmetic with this value will also be NaN",
 		"common causes: undefined variable, null field access, non-numeric string in a math expression",
 	)

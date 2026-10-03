@@ -16,6 +16,7 @@ set(TARGET_LIST
     "linux:amd64"
     "linux:arm64"
     "windows:amd64"
+    "windows:arm64"
     "darwin:amd64"
     "darwin:arm64"
     "android:arm64"
@@ -33,12 +34,16 @@ foreach(ENTRY ${TARGET_LIST})
     endif()
 
     set(RELEASE_NAME "lunex-${T_OS}-${T_ARCH}${T_EXT}")
+    set(ANDROID_BUILD_MODE "")
+    if(T_OS STREQUAL "android")
+        set(ANDROID_BUILD_MODE "-buildmode=pie")
+    endif()
     message(STATUS "Building ${T_OS}/${T_ARCH}")
 
     execute_process(
         COMMAND ${CMAKE_COMMAND} -E env
             GONOSUMDB=* GOFLAGS=-mod=mod GOOS=${T_OS} GOARCH=${T_ARCH} CGO_ENABLED=0
-            ${GO_EXECUTABLE} build -trimpath -tags netgo -ldflags=-s\ -w
+            ${GO_EXECUTABLE} build ${ANDROID_BUILD_MODE} -trimpath -tags netgo,osusergo -ldflags=-s\ -w
             -o "${OUT_DIR}/${RELEASE_NAME}" ./cmd/lunex
         WORKING_DIRECTORY ${SRC_DIR}
         RESULT_VARIABLE BUILD_RESULT

@@ -1168,6 +1168,9 @@ var stdlibModules = map[string][]struct {
 
 func (c *ntzC) compileAtImport(n *ast.Node) error {
 	modPath := n.Source
+	if modPath == "std.ffi" {
+		return ErrNTZUnsupported
+	}
 	methods, known := stdlibModules[modPath]
 	if !known {
 

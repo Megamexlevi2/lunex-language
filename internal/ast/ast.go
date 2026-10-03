@@ -165,50 +165,20 @@ type Node struct {
 	Binding       string
 	SelectCases   []*SelectCase
 
-	// NumCache holds the parsed float64 for a NumberLit node, computed once
-	// and reused on every subsequent evaluation instead of re-parsing the
-	// source string representation each time. Set via atomic.Pointer semantics
-	// by the interpreter (see runtime.evalNumber); nil means "not yet cached".
 	NumCache *float64
 
-	// NeedsScopeCache caches, for a Block node, whether it declares any
-	// bindings of its own (var/const/fn) and therefore needs a fresh
-	// Environment. Blocks that only contain expressions/assignments (e.g. a
-	// while-loop body like `{ i = i + 1 }`) can safely execute directly in
-	// the parent's Environment, avoiding an alloc/pool round-trip on every
-	// iteration. nil means "not yet computed".
 	NeedsScopeCache *bool
 
-	// ScopeInfo is set by internal/resolver on every node that introduces
-	// its own lexical frame (function bodies, for/catch/have/match-case
-	// frames, and blocks that declare bindings). It records, in binding
-	// order, the names local to that frame, so the runtime can back it
-	// with a slot slice instead of a map. nil means "not resolved" (either
-	// resolution has not run, or this node never introduces its own
-	// frame) and the runtime falls back to its existing map-based
-	// Environment for it.
 	ScopeInfo *ScopeInfo
 
-	// ResolvedAddr is set by internal/resolver on Identifier nodes (and on
-	// assignment-target Identifiers) whose binding was proven statically
-	// addressable: walk Hops parent Environments, then index Slot. nil
-	// means "not resolved" -- either the name is a global/module-level
-	// binding, or resolution had to cross a dynamic frame (see
-	// ScopeInfo.Dynamic) -- and the runtime falls back to its existing
-	// name-based Environment.Get/Set.
 	ResolvedAddr *ResolvedAddr
 }
 
-// ScopeInfo records the statically-known bindings of one lexical frame.
-// See the resolver package for how it is computed.
 type ScopeInfo struct {
 	Names   []string
 	Dynamic bool
 }
 
-// ResolvedAddr is the statically-resolved address of an identifier
-// reference: walk Hops parent Environments from the current one, then
-// index Slot into that frame's slot slice.
 type ResolvedAddr struct {
 	Hops int
 	Slot int
@@ -222,11 +192,6 @@ type Param struct {
 	Optional    bool
 	Destructure interface{}
 
-	// ResolvedSlot is set by internal/resolver to this parameter's slot
-	// index within its function's frame (always Hops 0 -- a parameter is
-	// always bound directly into the frame that declares it, never a
-	// parent). -1 means unresolved (destructured params declare their
-	// own sub-bindings instead and leave this at -1).
 	ResolvedSlot int
 }
 
@@ -274,11 +239,6 @@ type ObjProp struct {
 	IsGet    bool
 	IsSet    bool
 
-	// ShorthandAddr is set by internal/resolver for Kind=="shorthand"
-	// properties (`{ x }`, equivalent to `{ x: x }`), whose implicit
-	// variable reference has no Identifier AST node of its own to carry
-	// a ResolvedAddr. nil means unresolved; falls back to the existing
-	// env.Get(key) lookup.
 	ShorthandAddr *ResolvedAddr
 }
 

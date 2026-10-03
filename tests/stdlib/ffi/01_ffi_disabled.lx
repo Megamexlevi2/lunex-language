@@ -1,0 +1,21 @@
+val io = @import("std.io")
+val ffi = @import("std.ffi")
+
+fn main() {
+  if ffi.enabled() {
+    throw "FAIL ffi must be disabled by default"
+  }
+
+  var blocked = false
+  try {
+    ffi.load("libc.so")
+  } catch (e) {
+    blocked = e.code == "E0120"
+  }
+
+  if !blocked {
+    throw "FAIL disabled FFI did not return E0120"
+  }
+
+  io.log("PASS ffi_disabled")
+}

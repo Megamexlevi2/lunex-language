@@ -2,7 +2,6 @@ package lunex
 
 import (
 	"bufio"
-	_ "embed"
 	"encoding/json"
 	"fmt"
 	"lunex/internal/adaptor"
@@ -24,12 +23,10 @@ import (
 	"reflect"
 	goruntime "runtime"
 	"runtime/debug"
+	"sort"
 	"strings"
 	"time"
 )
-
-//go:embed version.json
-var _versionJSON []byte
 
 var noCache bool
 
@@ -78,6 +75,8 @@ func Run() {
 	firstrun.Check(meta.Version())
 
 	args := os.Args[1:]
+	std.SetFFIEnabled(false)
+	args = consumeFFIOption(args)
 
 	if len(args) > 0 && args[0] == "*debug" {
 		os.Setenv("NTL_DEBUG", "1")
@@ -96,6 +95,10 @@ func Run() {
 				dbg.EnableVerbose()
 			case "--no-cache":
 				noCache = true
+			case "--no-jit":
+				runtime.SetNativeEnabled(false)
+			case "--jit":
+				runtime.SetNativeEnabled(true)
 			default:
 				filtered = append(filtered, a)
 			}
@@ -129,6 +132,10 @@ func Run() {
 
 	case "help", "--help", "-h":
 		printHelp()
+
+	case "--help-extras":
+		fmt.Println("--jit")
+		fmt.Println("--no-jit")
 
 	case "start":
 		runStart(args[1:])
@@ -196,8 +203,7 @@ fn main() {
 
 		mathPath := filepath.Join(srcDir, "math.lx")
 		if _, err := os.Stat(mathPath); os.IsNotExist(err) {
-			mathCode := `// Local module example — import with: @fimport("./src/math.lx")
-
+			mathCode := `
 fn add(a, b) {
   a + b
 }
@@ -346,19 +352,12 @@ fn mul(a, b) {
 		}
 		debugFile(args[1], args[2:])
 
-	case "build":
-		if len(args) == 1 {
-			runBuildFile()
-		} else {
-			parseBuildCommand(args[1:])
-		}
-
 	case "repl":
 		runREPL()
 
 	case "pack":
 		if len(args) < 2 {
-			fmt.Fprintln(os.Stderr, "usage: lunex pack <directory> [-o output.nax]")
+			fmt.Fprintln(os.Stderr, "usage: lunex pack <file.lx|directory> [--source] [-o output.nax]")
 			os.Exit(1)
 		}
 		parsePackCommand(args[1:])
@@ -376,13 +375,6 @@ fn mul(a, b) {
 			os.Exit(1)
 		}
 		seeErrors(args[1])
-
-	case "dis", "disassemble":
-		if len(args) < 2 {
-			fmt.Fprintln(os.Stderr, "usage: lunex dis <file.nax>")
-			os.Exit(1)
-		}
-		disassembleFile(args[1])
 
 	case "cache":
 		if len(args) > 1 && args[1] == "clear" {
@@ -449,8 +441,7 @@ func newCompiler() *compiler.Compiler {
 }
 
 func moduleSourceFromPath(resolvedPath string) (string, bool) {
-	ext := strings.ToLower(filepath.Ext(resolvedPath))
-	switch ext {
+	switch strings.ToLower(filepath.Ext(resolvedPath)) {
 	case ".lx":
 		data, err := os.ReadFile(resolvedPath)
 		if err != nil {
@@ -458,35 +449,21 @@ func moduleSourceFromPath(resolvedPath string) (string, bool) {
 		}
 		return string(data), true
 	case ".nax":
-		if arch, err := bytecode.LoadNAX(resolvedPath); err == nil && arch != nil && len(arch.Entries) > 0 {
-			idx := int(arch.MainIndex)
-			if idx < 0 || idx >= len(arch.Entries) {
-				idx = 0
-			}
-			entry := arch.Entries[idx]
-			switch strings.ToLower(filepath.Ext(entry.Name)) {
-			case ".nax":
-				chunk, err := bytecode.DecodeObject(entry.Data)
-				if err != nil {
-					return "", false
-				}
-				return chunk.SourceText, true
-			default:
-				return string(entry.Data), true
-			}
+		arch, err := bytecode.LoadNAX(resolvedPath)
+		if err != nil || arch == nil || len(arch.Entries) == 0 {
+			return "", false
 		}
-		data, err := os.ReadFile(resolvedPath)
+		idx := int(arch.MainIndex)
+		if idx < 0 || idx >= len(arch.Entries) {
+			idx = 0
+		}
+		src, err := bytecode.RecoverNAXEntry(arch.Entries[idx])
 		if err != nil {
 			return "", false
 		}
-		chunk, err := bytecode.DecodeObject(data)
-		if err != nil {
-			return "", false
-		}
-		return chunk.SourceText, true
-	default:
-		return "", false
+		return src, true
 	}
+	return "", false
 }
 
 func pkgFileLoader(name string) (src, realPath string, ok bool) {
@@ -760,147 +737,309 @@ func runFile(filePath string, extraArgs []string) {
 	}
 }
 
-func shouldBundleProject(absInput, srcText string) bool {
-	if strings.Contains(srcText, "@fimport(") {
-		return true
-	}
-
-	rootDir := filepath.Dir(absInput)
-	count := 0
-	_ = filepath.WalkDir(rootDir, func(path string, d os.DirEntry, walkErr error) error {
-		if walkErr != nil || d == nil || d.IsDir() {
-			return nil
-		}
-		if !strings.EqualFold(filepath.Ext(path), ".lx") {
-			return nil
-		}
-		base := strings.ToLower(filepath.Base(path))
-		if base == "build.lx" || base == "buildfile.lx" {
-			return nil
-		}
-		count++
-		return nil
-	})
-	return count > 1
-}
-
-func buildEntryBundle(absInput, inputFile, outputFile string) error {
+func packSourceFile(absInput, inputFile, outputFile string, includeSource bool) error {
 	source, err := os.ReadFile(absInput)
 	if err != nil {
-		return fmt.Errorf("error reading %s: %w", inputFile, err)
+		return errfmt.New(errfmt.KindIO, "E0063", fmt.Sprintf("cannot read pack input `%s`: %v", inputFile, err), absInput, 1, 1, strings.Split(string(source), "\n"))
 	}
-	srcText := string(source)
-
-	c := newCompiler()
-	result := c.CompileSource(srcText, absInput)
-	if !result.Success {
-		for _, e := range result.Errors {
-			fmt.Fprint(os.Stderr, errfmt.Format(e))
-		}
-		return fmt.Errorf("compile failed")
+	if err := validatePackSource(string(source), absInput, false); err != nil {
+		return err
 	}
-
-	useBundle := strings.EqualFold(filepath.Ext(outputFile), ".nax")
-	if !useBundle {
-		if imports, err := findForceLocalImports(result.AST); err == nil && len(imports) > 0 {
-			useBundle = true
-		}
+	tree, err := validatePackCompilerGraph(absInput, string(source))
+	if err != nil {
+		return err
 	}
 
 	if outputFile == "" {
 		baseName := strings.TrimSuffix(filepath.Base(inputFile), filepath.Ext(inputFile))
-		if useBundle {
-			outputFile = baseName + ".nax"
-		} else {
-			outputFile = baseName + ".nax"
-		}
+		outputFile = baseName + ".nax"
 	}
-	if useBundle && !strings.EqualFold(filepath.Ext(outputFile), ".nax") {
-		outputFile = strings.TrimSuffix(outputFile, filepath.Ext(outputFile)) + ".nax"
-	}
-
+	outputFile = normalizeNAXOutput(outputFile)
 	if outDir := filepath.Dir(outputFile); outDir != "." && outDir != "" {
 		if err := os.MkdirAll(outDir, 0755); err != nil {
-			return fmt.Errorf("error: cannot create output dir %s: %w", outDir, err)
+			return errfmt.New(errfmt.KindIO, "E0063", fmt.Sprintf("cannot create output directory `%s`: %v", outDir, err), outDir, 1, 1, nil)
 		}
 	}
 
-	if useBundle {
-		if err := buildNAXBundle(absInput, inputFile, outputFile, srcText, result.AST); err != nil {
-			return err
-		}
-		fi, _ := os.Stat(outputFile)
-		sz := int64(0)
-		if fi != nil {
-			sz = fi.Size()
-		}
-		fmt.Printf("%s → %s (%d KB, bundle)\n", inputFile, outputFile, sz/1024)
-		return nil
+	if err := buildNAXBundle(absInput, inputFile, outputFile, string(source), tree, includeSource); err != nil {
+		return newPackInternalError(absInput, err.Error())
 	}
-
-	chunk := &bytecode.ExportedChunk{
-		Name:       strings.TrimSuffix(filepath.Base(inputFile), ".lx"),
-		SourceFile: absInput,
-		SourceText: srcText,
-	}
-	objectData, err := bytecode.EncodeExportedWithAST(chunk, result.AST)
+	fi, err := os.Stat(outputFile)
 	if err != nil {
-		return fmt.Errorf("error encoding: %w", err)
+		return newPackInternalError(absInput, fmt.Sprintf("archive was emitted but could not be stat'ed: %v", err))
 	}
-	if err := os.WriteFile(outputFile, objectData, 0644); err != nil {
-		return fmt.Errorf("error writing %s: %w", outputFile, err)
-	}
-	fi, _ := os.Stat(outputFile)
-	sz := int64(0)
-	if fi != nil {
-		sz = fi.Size()
-	}
-	fmt.Printf("%s → %s (%d KB)\n", inputFile, outputFile, sz/1024)
+	fmt.Printf("%s → %s (%s)\n", inputFile, outputFile, formatBytes(fi.Size()))
+	fmt.Println("help: You can also use the --source flag to facilitate future code retrieval using NAX.")
 	return nil
 }
 
-func runBuildFile() {
-	bfPath, ok := buildfile.Find()
-	if !ok {
-		fmt.Fprintln(os.Stderr, "error: no lunex.toml found in current directory")
-		fmt.Fprintln(os.Stderr, "  run 'lunex init' to create one, or specify a file:")
-		fmt.Fprintln(os.Stderr, "  lunex build <file.lx>")
-		os.Exit(1)
+func packSourceDirectory(absDir, inputPath, outputFile string, includeSource bool) error {
+	mainPath := filepath.Join(absDir, "main.lx")
+	if _, err := os.Stat(mainPath); err != nil {
+		return errfmt.New(errfmt.KindSyntax, "E0050", "pack directory requires `main.lx` at the project root", absDir, 1, 1, nil)
 	}
 
-	cfg, err := buildfile.Parse(bfPath)
+	files := make([]string, 0, 32)
+	if err := filepath.WalkDir(absDir, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if strings.EqualFold(filepath.Ext(path), ".lx") {
+			files = append(files, path)
+		}
+		return nil
+	}); err != nil {
+		return errfmt.New(errfmt.KindIO, "E0063", fmt.Sprintf("cannot scan pack directory `%s`: %v", inputPath, err), absDir, 1, 1, nil)
+	}
+
+	if len(files) == 0 {
+		return errfmt.New(errfmt.KindSyntax, "E0050", "pack directory contains no Lunex source files", absDir, 1, 1, nil)
+	}
+
+	sort.Slice(files, func(i, j int) bool {
+		reli, _ := filepath.Rel(absDir, files[i])
+		relj, _ := filepath.Rel(absDir, files[j])
+		return filepath.ToSlash(reli) < filepath.ToSlash(relj)
+	})
+
+	for _, file := range files {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			return errfmt.New(errfmt.KindIO, "E0063", fmt.Sprintf("cannot read `%s`: %v", file, err), file, 1, 1, nil)
+		}
+		isMain := filepath.Clean(file) == filepath.Clean(mainPath)
+		if err := validatePackSource(string(data), file, !isMain); err != nil {
+			return err
+		}
+		if _, err := validatePackCompilerGraphWithRoot(absDir, file, string(data)); err != nil {
+			return err
+		}
+	}
+
+	if outputFile == "" {
+		base := filepath.Base(filepath.Clean(absDir))
+		if base == "." || base == string(filepath.Separator) || base == "" {
+			base = "app"
+		}
+		outputFile = base + ".nax"
+	}
+	outputFile = normalizeNAXOutput(outputFile)
+	if outDir := filepath.Dir(outputFile); outDir != "." && outDir != "" {
+		if err := os.MkdirAll(outDir, 0755); err != nil {
+			return errfmt.New(errfmt.KindIO, "E0063", fmt.Sprintf("cannot create output directory `%s`: %v", outDir, err), outDir, 1, 1, nil)
+		}
+	}
+
+	var packErr error
+	if includeSource {
+		packErr = bytecode.PackDirectorySource(absDir, outputFile)
+	} else {
+		packErr = bytecode.PackDirectory(absDir, outputFile)
+	}
+	if packErr != nil {
+		return newPackInternalError(absDir, packErr.Error())
+	}
+
+	fi, err := os.Stat(outputFile)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error reading %s: %v\n", bfPath, err)
+		return newPackInternalError(absDir, fmt.Sprintf("directory archive was emitted but could not be stat'ed: %v", err))
+	}
+	fmt.Printf("%s → %s (%s, directory bundle)\n", inputPath, outputFile, formatBytes(fi.Size()))
+	fmt.Println("help: You can also use the --source flag to facilitate future code retrieval using NAX.")
+	return nil
+}
+
+func parsePackCommand(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: lunex pack <file.lx|directory> [--source] [-o output.nax]")
 		os.Exit(1)
 	}
-
-	fmt.Printf("Lunex %s  lunex.toml\n", meta.Version())
-	fmt.Printf("  name:    %s\n", cfg.Name)
-	fmt.Printf("  version: %s\n", cfg.Version)
-	fmt.Printf("  entry:   %s\n", cfg.Entry)
-	fmt.Printf("  output:  %s\n", cfg.Output)
-	fmt.Println()
-
-	entryPath := cfg.Entry
-	if !filepath.IsAbs(entryPath) {
-		entryPath = filepath.Join(filepath.Dir(bfPath), entryPath)
+	inputPath := args[0]
+	outputFile := ""
+	includeSource := false
+	for i := 1; i < len(args); i++ {
+		switch args[i] {
+		case "--source":
+			includeSource = true
+		case "-o", "--output":
+			if i+1 >= len(args) || strings.TrimSpace(args[i+1]) == "" {
+				fmt.Fprintln(os.Stderr, "error: -o requires a value")
+				os.Exit(1)
+			}
+			outputFile = args[i+1]
+			i++
+		default:
+			fmt.Fprintf(os.Stderr, "unknown flag: %s\n", args[i])
+			fmt.Fprintln(os.Stderr, "  usage: lunex pack <file.lx|directory> [--source] [-o output.nax]")
+			os.Exit(1)
+		}
 	}
-	absEntry, err := filepath.Abs(entryPath)
+
+	absInput, err := filepath.Abs(inputPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		fmt.Fprint(os.Stderr, errfmt.Format(errfmt.New(errfmt.KindIO, "E0063", fmt.Sprintf("cannot resolve pack input `%s`: %v", inputPath, err), inputPath, 1, 1, nil)))
 		os.Exit(1)
 	}
-	if _, err := os.Stat(absEntry); err != nil {
-		fmt.Fprintf(os.Stderr, "error: entry file %s not found\n", cfg.Entry)
-		os.Exit(1)
-	}
-
-	if err := buildEntryBundle(absEntry, cfg.Entry, filepath.Join(cfg.Output, cfg.Name)); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+	info, err := os.Stat(absInput)
+	if err != nil {
+		fmt.Fprint(os.Stderr, errfmt.Format(errfmt.New(errfmt.KindIO, "E0063", fmt.Sprintf("cannot access pack input `%s`: %v", inputPath, err), absInput, 1, 1, nil)))
 		os.Exit(1)
 	}
 
-	fmt.Println()
+	if info.IsDir() {
+		if err := packSourceDirectory(absInput, inputPath, outputFile, includeSource); err != nil {
+			if le, ok := err.(*errfmt.LunexError); ok {
+				fmt.Fprint(os.Stderr, errfmt.Format(le))
+			} else {
+				fmt.Fprint(os.Stderr, err.Error())
+			}
+			os.Exit(1)
+		}
+		return
+	}
+
+	if !strings.EqualFold(filepath.Ext(absInput), ".lx") {
+		fmt.Fprint(os.Stderr, errfmt.Format(errfmt.New(errfmt.KindSyntax, "E0050", fmt.Sprintf("pack accepts a Lunex source file or directory, got `%s`", filepath.Ext(absInput)), absInput, 1, 1, nil)))
+		os.Exit(1)
+	}
+	if err := packSourceFile(absInput, inputPath, outputFile, includeSource); err != nil {
+		fmt.Fprint(os.Stderr, err.Error())
+		os.Exit(1)
+	}
+}
+
+func validatePackSource(source, filename string, allowMissingMain bool) error {
+	c := newCompiler()
+	ch := checker.New(checker.Options{
+		Loader:           packCheckerLoader(),
+		KnownModules:     checkerKnownModules(c),
+		CheckStdMembers:  true,
+		AllowMissingMain: allowMissingMain,
+	})
+	result := ch.Check(source, filename)
+	errorCount := 0
+	for i := range result.Diagnostics {
+		errorCount++
+		fmt.Fprint(os.Stderr, formatCheckerDiagnostic(&result.Diagnostics[i]))
+	}
+	if errorCount > 0 {
+		return newPackInternalError(filename, fmt.Sprintf("semantic validation aborted NAX emission: files=%d imports=%d symbols=%d errors=%d", result.Files, result.Imports, result.Symbols, errorCount))
+	}
+	return nil
+}
+
+func validatePackCompilerGraph(absInput, source string) (*ast.Node, error) {
+	return validatePackCompilerGraphWithRoot(filepath.Dir(absInput), absInput, source)
+}
+
+func validatePackCompilerGraphWithRoot(rootDir, absInput, source string) (*ast.Node, error) {
+	visited := map[string]bool{absInput: true}
+	var validate func(string, string) (*ast.Node, error)
+	validate = func(filename, sourceText string) (*ast.Node, error) {
+		compilerInstance := newCompiler()
+		result := compilerInstance.CompileSource(sourceText, filename)
+		if !result.Success {
+			for _, e := range result.Errors {
+				fmt.Fprint(os.Stderr, errfmt.Format(e))
+			}
+			return nil, newPackInternalError(filename, "compiler rejected a source after semantic validation")
+		}
+		for _, spec := range mustFindPackImports(result.AST) {
+			importAbs, _, err := resolveBundleImport(rootDir, filename, spec)
+			if err != nil {
+				e := errfmt.New(errfmt.KindImport, "E0010", fmt.Sprintf("module not found: '%s'", spec), filename, 1, 1, nil)
+				e.Notes = []string{err.Error()}
+				e.Suggestion = "check the @fimport path and make sure the .lx file exists"
+				fmt.Fprint(os.Stderr, errfmt.Format(e))
+				return nil, newPackInternalError(filename, "local import graph could not be resolved")
+			}
+			if visited[importAbs] {
+				continue
+			}
+			visited[importAbs] = true
+			data, err := os.ReadFile(importAbs)
+			if err != nil {
+				e := errfmt.New(errfmt.KindIO, "E0063", fmt.Sprintf("cannot read local import '%s': %v", importAbs, err), importAbs, 1, 1, nil)
+				fmt.Fprint(os.Stderr, errfmt.Format(e))
+				return nil, newPackInternalError(filename, "local import source could not be read")
+			}
+			if _, err := validate(importAbs, string(data)); err != nil {
+				return nil, err
+			}
+		}
+		return result.AST, nil
+	}
+	return validate(absInput, source)
+}
+
+func mustFindPackImports(tree *ast.Node) []string {
+	imports, err := findForceLocalImports(tree)
+	if err != nil {
+		return nil
+	}
+	return imports
+}
+
+func packCheckerLoader() checker.Loader {
+	return func(path, from string) (string, string, bool) {
+		if strings.HasPrefix(path, "./") || strings.HasPrefix(path, "../") || strings.HasPrefix(path, "/") || strings.HasSuffix(strings.ToLower(path), ".lx") || strings.HasSuffix(strings.ToLower(path), ".nax") {
+			candidate := path
+			if !filepath.IsAbs(candidate) {
+				candidate = filepath.Join(filepath.Dir(from), filepath.FromSlash(candidate))
+			}
+			candidate, _ = filepath.Abs(candidate)
+			if src, ok := moduleSourceFromPath(candidate); ok {
+				return src, candidate, true
+			}
+			return "", candidate, false
+		}
+		resolved, ok := pkg.Resolve(path)
+		if !ok {
+			resolved = strings.TrimPrefix(path, "std.")
+			if !containsString([]string{"io", "fs", "http", "crypto", "db", "env", "testing", "ffi", "ws", "utils", "json", "jwt", "math", "datetime", "os", "regex", "buffer", "ints", "runtime", "http.router", "http.static"}, resolved) {
+				return "", "", false
+			}
+			return "", "<std:" + resolved + ">", true
+		}
+		src, ok := moduleSourceFromPath(resolved)
+		return src, resolved, ok
+	}
+}
+
+func formatCheckerDiagnostic(d *errfmt.LunexError) string {
+	return errfmt.Format(d)
+}
+
+func newPackInternalError(filename, detail string) error {
+	message := "NAX emission aborted: compiler/checker invariant violated"
+	if detail != "" {
+		message += ": " + detail
+	}
+	e := errfmt.New(errfmt.KindRuntime, errfmt.ErrPackPipeline, message, filename, 1, 1, nil)
+	e.Notes = []string{"pipeline=lexer -> parser -> resolver -> checker -> bundle -> NAX", "archive emission was stopped because an internal pipeline invariant failed"}
+	e.Suggestion = "fix the reported diagnostics and rerun `lunex pack`"
+	return fmt.Errorf("%s", errfmt.Format(e))
+}
+
+func normalizeNAXOutput(output string) string {
+	if strings.EqualFold(filepath.Ext(output), ".nax") {
+		return output
+	}
+	return strings.TrimSuffix(output, filepath.Ext(output)) + ".nax"
+}
+
+func formatBytes(size int64) string {
+	switch {
+	case size < 1024:
+		return fmt.Sprintf("%d B", size)
+	case size < 1024*1024:
+		return fmt.Sprintf("%.1f KB", float64(size)/1024)
+	default:
+		return fmt.Sprintf("%.1f MB", float64(size)/(1024*1024))
+	}
 }
 
 func runNTLWithCache(absPath string) {
@@ -1014,115 +1153,21 @@ func runNTLWithCache(absPath string) {
 
 func execBinary(objectData []byte) {
 	defer safeRecover()
+	if len(objectData) >= 5 && string(objectData[:5]) == "LXNAX" {
+		dbg.Step("running NAX archive", "Go interpreter executes the compiled AST")
+		if err := bytecode.RunNAX(objectData, pkgLoader, pkgLoader); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	ntz := bytecode.NTZSection(objectData)
 	dbg.BytecodeSection(len(objectData), len(ntz), len(ntz) > 0)
-	dbg.Step("running with Go interpreter", "Go handles all execution")
-
+	dbg.Step("running compiled Lunex object", "Go interpreter executes the AST")
 	if err := bytecode.RunObject(objectData, pkgLoader, pkgLoader); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-}
-
-func parseBuildCommand(args []string) {
-	if len(args) == 0 {
-		runBuildFile()
-		return
-	}
-
-	inputFile := args[0]
-	outputFile := ""
-
-	for i := 1; i < len(args); i++ {
-		switch args[i] {
-		case "-o", "--output":
-			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "error: -o requires a value")
-				os.Exit(1)
-			}
-			outputFile = args[i+1]
-			i++
-		default:
-			fmt.Fprintf(os.Stderr, "unknown flag: %s\n", args[i])
-			fmt.Fprintln(os.Stderr, "  usage: lunex build <file.lx> [-o output.nax|output.nax]")
-			os.Exit(1)
-		}
-	}
-
-	if !strings.HasSuffix(inputFile, ".lx") {
-		inputFile += ".lx"
-	}
-	absInput, err := filepath.Abs(inputFile)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
-	if err := buildEntryBundle(absInput, inputFile, outputFile); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(1)
-	}
-}
-
-func buildNC(absInput, inputFile, outputFile string) {
-	if err := buildEntryBundle(absInput, inputFile, outputFile); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(1)
-	}
-}
-
-func parsePackCommand(args []string) {
-	srcDir := args[0]
-	outputFile := strings.TrimSuffix(filepath.Base(srcDir), "/") + ".nax"
-	for i := 1; i < len(args); i++ {
-		if args[i] == "-o" && i+1 < len(args) {
-			outputFile = args[i+1]
-			i++
-		}
-	}
-	absDir, err := filepath.Abs(srcDir)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
-
-	ncFiles := map[string][]byte{}
-	err = filepath.WalkDir(absDir, func(path string, d os.DirEntry, walkErr error) error {
-		if walkErr != nil || d.IsDir() {
-			return nil
-		}
-		if strings.HasSuffix(path, ".lx") {
-			data, err := os.ReadFile(path)
-			if err != nil {
-				return nil
-			}
-			rel, _ := filepath.Rel(absDir, path)
-			c := newCompiler()
-			srcText := string(data)
-			result := c.CompileSource(srcText, path)
-			if !result.Success {
-				return nil
-			}
-			chunk := &bytecode.ExportedChunk{
-				Name:       strings.TrimSuffix(rel, ".lx"),
-				SourceFile: path,
-				SourceText: srcText,
-			}
-			if objectData, err := bytecode.EncodeExportedWithAST(chunk, result.AST); err == nil {
-				ncFiles[strings.TrimSuffix(rel, ".lx")+".nax"] = objectData
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
-
-	if err := bytecode.PackDirectory(absDir, outputFile); err != nil {
-		fmt.Fprintf(os.Stderr, "error writing nax: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Printf("packed %d files → %s\n", len(ncFiles), outputFile)
 }
 
 func seeErrors(filePath string) {
@@ -1207,32 +1252,7 @@ func checkFile(filePath string) {
 	dbg.VKV("file", absPath)
 	dbg.VKV("source bytes", len(source))
 
-	loader := func(path, from string) (string, string, bool) {
-		if strings.HasPrefix(path, "./") || strings.HasPrefix(path, "../") || strings.HasPrefix(path, "/") || strings.HasSuffix(strings.ToLower(path), ".lx") || strings.HasSuffix(strings.ToLower(path), ".nax") {
-			candidate := path
-			if !filepath.IsAbs(candidate) {
-				candidate = filepath.Join(filepath.Dir(from), filepath.FromSlash(candidate))
-			}
-			candidate, _ = filepath.Abs(candidate)
-			if src, ok := moduleSourceFromPath(candidate); ok {
-				return src, candidate, true
-			}
-			return "", candidate, false
-		}
-		resolved, ok := pkg.Resolve(path)
-		if !ok {
-			resolved = strings.TrimPrefix(path, "std.")
-			if stdFiles := []string{
-				"io", "fs", "http", "crypto", "db", "env", "ws", "utils", "json", "jwt", "math", "datetime", "os", "regex", "buffer", "ints", "runtime",
-			}; !containsString(stdFiles, resolved) {
-				return "", "", false
-			}
-			return "", "<std:" + resolved + ">", true
-		}
-		src, ok := moduleSourceFromPath(resolved)
-		return src, resolved, ok
-	}
-
+	loader := packCheckerLoader()
 	c := newCompiler()
 
 	ch := checker.New(checker.Options{
@@ -1253,18 +1273,13 @@ func checkFile(filePath string) {
 	dbg.VKV("imports resolved", result.Imports)
 	dbg.VKV("symbols indexed", result.Symbols)
 
-	errors := 0
-	warnings := 0
-	for _, d := range result.Diagnostics {
-		if d.Severity == checker.Warning {
-			warnings++
-		} else {
-			errors++
-		}
-		printCheckDiagnostic(d)
+	errors := len(result.Diagnostics)
+
+	for i := range result.Diagnostics {
+		printCheckDiagnostic(&result.Diagnostics[i])
 	}
 
-	dbg.VStep("diagnostics complete", "errors", errors, "warnings", warnings)
+	dbg.VStep("diagnostics complete", "errors", errors)
 	dbg.Footer(time.Since(started))
 	dbg.VFooter(time.Since(started))
 
@@ -1272,16 +1287,12 @@ func checkFile(filePath string) {
 		fmt.Fprintf(os.Stderr, "\nerror: could not compile `%s` due to %d previous error(s)\n", filePath, errors)
 		os.Exit(1)
 	}
-	if warnings > 0 {
-		fmt.Printf("\nwarning: %s checked with %d warning(s)\n", filePath, warnings)
-	} else {
-		fmt.Printf("\nFinished checking %s: no errors\n", filePath)
-	}
+	fmt.Printf("\nFinished checking %s: no errors\n", filePath)
 }
 
 func checkerKnownModules(c *compiler.Compiler) map[string]map[string]struct{} {
 	known := make(map[string]map[string]struct{})
-	names := []string{"runtime", "io", "fs", "http", "crypto", "db", "env", "ws", "utils", "json", "jwt", "math", "datetime", "os", "regex", "buffer", "ints", "internal.native"}
+	names := []string{"runtime", "io", "fs", "http", "crypto", "db", "env", "testing", "ffi", "ws", "utils", "json", "jwt", "math", "datetime", "os", "regex", "buffer", "ints", "http/router", "http/static", "internal.native"}
 	for _, name := range names {
 		mod, ok := c.Interpreter().GetModule(name)
 		if !ok || mod == nil || mod.ObjVal == nil {
@@ -1305,38 +1316,8 @@ func containsString(values []string, wanted string) bool {
 	return false
 }
 
-func printCheckDiagnostic(d checker.Diagnostic) {
-	level := string(d.Severity)
-	if level == "" {
-		level = "error"
-	}
-	file := d.File
-	if file == "" {
-		file = "<unknown>"
-	}
-	line := d.Line
-	col := d.Col
-	if line <= 0 {
-		line = 1
-	}
-	if col <= 0 {
-		col = 1
-	}
-	code := d.Code
-	if code == "" {
-		code = "E0000"
-	}
-	fmt.Fprintf(os.Stderr, "\n%s[%s]%s: %s\n", "\x1b[31m", code, "\x1b[0m", d.Message)
-	fmt.Fprintf(os.Stderr, "  %s --> %s:%d:%d\n", "\x1b[36m", file, line, col)
-	if len(d.Lines) > 0 && line <= len(d.Lines) {
-		fmt.Fprintf(os.Stderr, "  |\n  %4d | %s\n  |     %*s^\n", line, d.Lines[line-1], maxInt(col-1, 0), "")
-	}
-	for _, note := range d.Notes {
-		fmt.Fprintf(os.Stderr, "  = note: %s\n", note)
-	}
-	if d.Help != "" {
-		fmt.Fprintf(os.Stderr, "  = help: %s\n", d.Help)
-	}
+func printCheckDiagnostic(d *errfmt.LunexError) {
+	fmt.Fprint(os.Stderr, errfmt.Format(d))
 }
 
 func maxInt(a, b int) int {
@@ -1635,11 +1616,6 @@ func printEnv() {
 	}
 }
 
-// printHelpCompact renders a narrower, single-column version of the
-// help text for small terminals (a typical Termux window on a phone
-// is 40-60 columns, well under the ~90 the full two-column help
-// assumes). Command and description stack instead of sitting side by
-// side, so nothing wraps mid-word into an unreadable jumble.
 func printHelpCompact() {
 	type entry struct{ cmd, desc string }
 	sections := []struct {
@@ -1652,12 +1628,10 @@ func printHelpCompact() {
 			{"lunex debug <file>", "run with full diagnostics + stack trace"},
 			{"lunex -e \"<code>\"", "run a code snippet directly"},
 			{"lunex repl", "start the interactive REPL"},
-			{"lunex build [file] [-o]", "compile the project entry"},
 			{"lunex check <file>", "check for errors without running"},
-			{"lunex dis <file.nax>", "inspect a .nax archive"},
 			{"lunex init [name]", "create a new project folder"},
-			{"lunex pack <dir>", "bundle a directory to .nax"},
-			{"lunex unpack <file.nax>", "extract a .nax archive"},
+			{"lunex pack <file.lx|directory>", "validate and bundle source or project directory to .nax"},
+			{"lunex unpack <file.nax>", "recover .lx code from the compiled NAX archive"},
 			{"lunex cache [clear]", "show or clear the on-disk cache"},
 			{"lunex platform", "show platform / adapter diagnostics"},
 			{"lunex bench <file>", "run with timing output"},
@@ -1667,6 +1641,7 @@ func printHelpCompact() {
 		}},
 		{"Modules", []entry{
 			{"@import(\"std.io\")", "standard library module"},
+			{"lunex ffi = on run app.lx", "enable native FFI for this process"},
 			{"@import(\"pkg-name\")", "installed library"},
 			{"@fimport(\"./f.nax\")", "local .nax archive file"},
 			{"@fimport(\"./f.lx\")", "local .lx source file"},
@@ -1696,6 +1671,31 @@ including the standard library module list.
 `)
 }
 
+func consumeFFIOption(args []string) []string {
+	if len(args) == 0 || args[0] != "ffi" {
+		return args
+	}
+	if len(args) < 3 || args[1] != "=" || (args[2] != "on" && args[2] != "off") {
+		e := errfmt.New(errfmt.KindSyntax, "E0133", "invalid FFI option syntax", "<command line>", 1, 1, nil)
+		e.Suggestion = "use `lunex ffi = on run <file>` or `lunex ffi = off run <file>`"
+		e.Notes = []string{"the FFI switch is a command-line prefix", "FFI is disabled when no prefix is supplied"}
+		fmt.Fprint(os.Stderr, errfmt.Format(e))
+		os.Exit(2)
+	}
+	std.SetFFIEnabled(args[2] == "on")
+	remaining := args[3:]
+	if len(remaining) == 0 {
+		state := "off"
+		if std.IsFFIEnabled() {
+			state = "on"
+		}
+		fmt.Printf("FFI is %s for this Lunex process.\n", state)
+		fmt.Println("Provide a command after the option, for example: lunex ffi = on run app.lx")
+		os.Exit(0)
+	}
+	return remaining
+}
+
 func printHelp() {
 	fmt.Printf("Lunex %s\n\n", meta.Version())
 
@@ -1710,15 +1710,13 @@ func printHelp() {
   lunex debug <file>                 run with full compile diagnostics and a stack trace on error
   lunex -e "<code>"                  run a code snippet directly
   lunex repl                         start the interactive REPL
-  lunex build [file] [-o]            compile the project entry
   lunex check <file>                 check for errors without running
   lunex see_errors <file>            show detailed compile errors
-  lunex dis <file.nax>               inspect a .nax archive
   lunex init [name]                  create a new project folder
   lunex init <template> <name>       create a project from a template
                                         (http_server, database, website)
-  lunex pack <dir>                   bundle a directory to .nax archive
-  lunex unpack <file.nax>            extract a .nax archive to a directory
+  lunex pack <file.lx|directory> [--source] validate and bundle source or project directory to an optimized .nax archive
+  lunex unpack <file.nax>            recover .lx code from the compiled NAX archive to a directory
   lunex set cache <dir>              set the on-disk runtime cache directory
   lunex set cache reset              reset the cache directory to default
   lunex cache [clear]                show or clear the on-disk runtime cache
@@ -1772,11 +1770,16 @@ Global flags (place before the command or file):
   --verbose, -V enable verbose debug output (implies --debug)
   --no-cache    compile fresh every run; store nothing to disk or memory
 
+Native FFI (disabled by default; CLI-only):
+  lunex ffi = on run app.lx      enable FFI for this process
+  lunex ffi = off run app.lx     explicitly disable FFI for this process
+  The FFI switch is not read from source code or environment variables.
+
 Environment variables:
   LUNEX_DEBUG=1   enable debug mode
   LUNEX_VERBOSE=1 verbose debug output (implies LUNEX_DEBUG=1)
 
-Standard library modules (14):
+Standard library modules:
   io         Console I/O: print, log, warn, table, colors
   fs         File system: read, write, list, stat, copy, glob
   http       HTTP client and server
@@ -1790,6 +1793,7 @@ Standard library modules (14):
   os         OS interaction: exec, env, platform, paths
   regex      Regular expression matching and replacement
   env        Read and write environment variables
+  ffi        Native shared-library loading, symbol binding, calls, callbacks, and memory access
   utils      String, array, and object helpers
 
 `)

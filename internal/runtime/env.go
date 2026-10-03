@@ -7,28 +7,12 @@ import (
 	"sync/atomic"
 )
 
-// Environment uses a lock-free fast path for the common case (no closures
-// capturing it, so it's never touched by more than one goroutine). Only
-// once an Environment is marked "escaped" (a closure was created over it,
-// or a spawn was launched from it) does it fall back to mutex-guarded
-// access, since at that point it may genuinely be shared across goroutines.
-//
-// slots holds statically-resolved local bindings (see internal/resolver):
-// when an Identifier's ast.ResolvedAddr is non-nil, the interpreter reads
-// or writes slots[Slot] directly after walking Hops parent links, skipping
-// the map entirely. vars/consts remain fully populated in parallel (see
-// GetSlot/SetSlot below) so that name-based lookups -- AllNames, Snapshot,
-// error "did you mean" suggestions, dynamic access via with/eval-like
-// paths, and any identifier the resolver did not confidently resolve --
-// keep working exactly as before, unchanged. A frame with no
-// statically-known scope (slots == nil) behaves identically to the
-// pre-resolver Environment.
 type Environment struct {
 	mu      sync.RWMutex
 	vars    map[string]*Value
 	consts  map[string]bool
 	parent  *Environment
-	escaped int32 // atomic bool: 0 = not escaped, 1 = escaped
+	escaped int32
 	slots   []*Value
 }
 
@@ -56,12 +40,6 @@ func NewEnvironment(parent *Environment) *Environment {
 	return e
 }
 
-// NewResolvedEnvironment is like NewEnvironment, but additionally
-// allocates a slot slice of the given size for a frame the resolver
-// determined has a statically-known set of local bindings. slotCount
-// should come from resolver.SlotCount(node.ScopeInfo) for the node this
-// Environment backs; pass 0 (equivalent to NewEnvironment) for frames the
-// resolver did not annotate.
 func NewResolvedEnvironment(parent *Environment, slotCount int) *Environment {
 	e := NewEnvironment(parent)
 	if slotCount > 0 {
@@ -269,22 +247,6 @@ func (e *Environment) AllNames() []string {
 	return names
 }
 
-// GetSlotAddr reads a statically-resolved local: walk hops parent links
-// from e, then index slot into that frame's slots. It assumes the
-// resolver proved this address valid for this exact frame shape (see
-// internal/resolver), so no bounds/nil checking beyond what a
-// programming error in the resolver itself would need -- callers must
-// only invoke this for identifiers that carry a non-nil
-// ast.ResolvedAddr.
-//
-// Every write path that can target a resolved slot (DefineSlot, SetSlot)
-// also writes the same value into e.vars under its name, so name-based
-// paths -- AllNames, Snapshot, error "did you mean" suggestions, and any
-// identifier the resolver left unannotated -- keep seeing an accurate,
-// fully up to date view. This costs one extra map write per local
-// assignment (not per read) in exchange for zero behavior change to
-// every existing name-based feature; a future pass could relax this once
-// those consumers are audited to not need it.
 func (e *Environment) GetSlotAddr(hops, slot int) *Value {
 	cur := e
 	for i := 0; i < hops; i++ {
@@ -299,11 +261,6 @@ func (e *Environment) GetSlotAddr(hops, slot int) *Value {
 	return Undefined
 }
 
-// DefineSlot both records val at the resolved (hops, slot) address and
-// defines it by name, keeping the two views in sync. name/isConst mirror
-// Define's parameters. Used for the initial binding of a resolved local
-// (var/const declarations, parameters, for-loop variables, catch
-// bindings, etc.).
 func (e *Environment) DefineSlot(hops, slot int, name string, val *Value, isConst bool) {
 	cur := e
 	for i := 0; i < hops; i++ {
@@ -315,10 +272,6 @@ func (e *Environment) DefineSlot(hops, slot int, name string, val *Value, isCons
 	cur.Define(name, val, isConst)
 }
 
-// SetSlot both writes val at the resolved (hops, slot) address and
-// updates the name-based binding, keeping the two views in sync. It
-// performs the same const-reassignment check Set does, since a resolved
-// address can still refer to a `val`/const binding.
 func (e *Environment) SetSlot(hops, slot int, name string, val *Value) error {
 	cur := e
 	for i := 0; i < hops; i++ {
@@ -334,9 +287,6 @@ func (e *Environment) SetSlot(hops, slot int, name string, val *Value) error {
 	return nil
 }
 
-// isConstLocal reports whether name is declared const directly in this
-// frame (not walking parents -- SetSlot already knows which frame the
-// binding lives in via hops, so it never needs to search).
 func (e *Environment) isConstLocal(name string) bool {
 	if !e.isEscaped() {
 		return e.consts[name]

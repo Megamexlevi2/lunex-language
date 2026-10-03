@@ -13,7 +13,7 @@ import (
 
 var naxMagic = [8]byte{'L', 'X', 'N', 'A', 'X', 0x02, 0x00, 0x1A}
 
-const naxVersion uint16 = 0x0700
+const naxVersion uint16 = 0x0701
 const naxHeaderSize = 40
 const naxKind byte = 0xB2
 
@@ -33,8 +33,11 @@ var ntlNAXInternalMagic = [4]byte{0x3d, 0x7e, 0xa1, 0x02}
 const ntlNAXInternalVersion uint16 = 0x0603
 
 type NAXEntry struct {
-	Name string
-	Data []byte
+	Name       string
+	Kind       byte
+	SourceFile string
+	SourceText string
+	Data       []byte
 }
 
 type NAXArchive struct {
@@ -58,16 +61,20 @@ func buildNAXHeader(payloadLen, entryCount, mainIndex uint32, digest [16]byte) [
 }
 
 func PackDirectory(dir string, outputFile string) error {
+	return PackDirectoryMode(dir, outputFile, false)
+}
+
+func PackDirectorySource(dir string, outputFile string) error {
+	return PackDirectoryMode(dir, outputFile, true)
+}
+
+func PackDirectoryMode(dir string, outputFile string, includeSource bool) error {
 	arch := &NAXArchive{
 		Version:   naxVersion,
 		BuildTime: time.Now().Unix(),
 	}
 	mainFound := false
-
-	entries := make([]struct {
-		name string
-		data []byte
-	}, 0, 32)
+	absOutput, _ := filepath.Abs(outputFile)
 
 	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -76,7 +83,13 @@ func PackDirectory(dir string, outputFile string) error {
 		if d.IsDir() {
 			return nil
 		}
-
+		absPath, err := filepath.Abs(path)
+		if err != nil {
+			return err
+		}
+		if absPath == absOutput {
+			return nil
+		}
 		rel, err := filepath.Rel(dir, path)
 		if err != nil {
 			return err
@@ -99,25 +112,13 @@ func PackDirectory(dir string, outputFile string) error {
 				}
 				return fmt.Errorf("compile error for %s: %s", rel, strings.Join(msgs, "; "))
 			}
-			chunk := &ExportedChunk{
-				Name:       strings.TrimSuffix(rel, ".lx"),
-				SourceFile: path,
-				SourceText: string(source),
-			}
-			objectData, err := EncodeExportedWithAST(chunk, result.AST)
+			entry, err := NewNAXCompiledEntry(rel, path, string(source), result.AST, includeSource)
 			if err != nil {
 				return fmt.Errorf("compile error for %s: %w", rel, err)
 			}
-			entries = append(entries, struct {
-				name string
-				data []byte
-			}{name: rel, data: source})
-			entries = append(entries, struct {
-				name string
-				data []byte
-			}{name: strings.TrimSuffix(rel, ".lx") + ".nax", data: objectData})
+			arch.Entries = append(arch.Entries, entry)
 			if base == "main.lx" {
-				arch.MainIndex = uint32(len(entries) - 1)
+				arch.MainIndex = uint32(len(arch.Entries) - 1)
 				mainFound = true
 			}
 		case ".nax":
@@ -125,12 +126,9 @@ func PackDirectory(dir string, outputFile string) error {
 			if err != nil {
 				return fmt.Errorf("cannot read %s: %w", rel, err)
 			}
-			entries = append(entries, struct {
-				name string
-				data []byte
-			}{name: rel, data: data})
+			arch.Entries = append(arch.Entries, NAXEntry{Name: rel, Kind: NAXEntryArchive, Data: data})
 			if base == "main.nax" {
-				arch.MainIndex = uint32(len(entries) - 1)
+				arch.MainIndex = uint32(len(arch.Entries) - 1)
 				mainFound = true
 			}
 		}
@@ -139,26 +137,16 @@ func PackDirectory(dir string, outputFile string) error {
 	if err != nil {
 		return err
 	}
-
-	for _, e := range entries {
-		arch.Entries = append(arch.Entries, NAXEntry{Name: e.name, Data: e.data})
-	}
-
 	if len(arch.Entries) == 0 {
 		return fmt.Errorf("no source files found in %s", dir)
 	}
 	if !mainFound {
-		return fmt.Errorf(
-			"no main.lx or main.nax found in %s\n  a .nax archive requires main.lx as its entry point\n  create main.lx with your program's entry point first",
-			dir,
-		)
+		return fmt.Errorf("no main.lx or main.nax found in %s\n  a .nax archive requires main.lx as its entry point\n  create main.lx with your program's entry point first", dir)
 	}
-
 	raw, err := encodeNAX(arch)
 	if err != nil {
 		return err
 	}
-
 	return os.WriteFile(outputFile, raw, 0644)
 }
 
@@ -205,6 +193,11 @@ func encodeNAXGo(arch *NAXArchive) ([]byte, error) {
 	writeI64(&payload, arch.BuildTime)
 	for _, e := range arch.Entries {
 		writeString(&payload, e.Name)
+		payload.WriteByte(e.Kind)
+		writeString(&payload, e.SourceFile)
+		if e.Kind == NAXEntryCompiledSource {
+			writeString(&payload, e.SourceText)
+		}
 		writeU32(&payload, uint32(len(e.Data)))
 		payload.Write(e.Data)
 	}
@@ -290,6 +283,21 @@ func decodeCurrentNAX(data []byte) (*NAXArchive, error) {
 		if err != nil {
 			return nil, fmt.Errorf("invalid archive: entry %d name: %w", i, err)
 		}
+		kind, err := r.ReadByte()
+		if err != nil {
+			return nil, fmt.Errorf("invalid archive: entry %d kind: %w", i, err)
+		}
+		sourceFile, err := readString(r)
+		if err != nil {
+			return nil, fmt.Errorf("invalid archive: entry %d source file: %w", i, err)
+		}
+		sourceText := ""
+		if kind == NAXEntryCompiledSource {
+			sourceText, err = readString(r)
+			if err != nil {
+				return nil, fmt.Errorf("invalid archive: entry %d source: %w", i, err)
+			}
+		}
 		size, err := readU32(r)
 		if err != nil {
 			return nil, fmt.Errorf("invalid archive: entry %d size: %w", i, err)
@@ -298,7 +306,7 @@ func decodeCurrentNAX(data []byte) (*NAXArchive, error) {
 		if _, err := io.ReadFull(r, entryData); err != nil {
 			return nil, fmt.Errorf("invalid archive: entry %d data truncated: %w", i, err)
 		}
-		arch.Entries = append(arch.Entries, NAXEntry{Name: name, Data: entryData})
+		arch.Entries = append(arch.Entries, NAXEntry{Name: name, Kind: kind, SourceFile: sourceFile, SourceText: sourceText, Data: entryData})
 	}
 
 	return arch, nil
@@ -486,18 +494,30 @@ func unpackNAXData(data []byte, outDir string) (int, error) {
 		if entry.Name == "" {
 			continue
 		}
-
-		clean := filepath.Clean(filepath.Join(outDir, filepath.FromSlash(entry.Name)))
+		name := entry.Name
+		content := entry.Data
+		if IsNAXCompiledEntry(entry) {
+			recovered, err := RecoverNAXEntry(entry)
+			if err != nil {
+				return count, fmt.Errorf("recovering %q: %w", entry.Name, err)
+			}
+			name = strings.TrimSuffix(name, filepath.Ext(name)) + ".lx"
+			content = []byte(recovered)
+		} else if entry.Kind == NAXEntrySource {
+			content = entry.Data
+		} else if entry.Kind == NAXEntryArchive {
+			continue
+		}
+		clean := filepath.Clean(filepath.Join(outDir, filepath.FromSlash(name)))
 		if !strings.HasPrefix(clean, outDir+string(filepath.Separator)) {
 			return count, fmt.Errorf("archive entry %q has an unsafe path — skipping", entry.Name)
 		}
 		if err := os.MkdirAll(filepath.Dir(clean), 0755); err != nil {
-			return count, fmt.Errorf("creating directory for %q: %w", entry.Name, err)
+			return count, fmt.Errorf("creating directory for %q: %w", name, err)
 		}
-		if err := os.WriteFile(clean, entry.Data, 0644); err != nil {
-			return count, fmt.Errorf("writing %q: %w", entry.Name, err)
+		if err := os.WriteFile(clean, content, 0644); err != nil {
+			return count, fmt.Errorf("writing %q: %w", name, err)
 		}
-
 		if arch.BuildTime > 0 {
 			mtime := time.Unix(arch.BuildTime, 0)
 			_ = os.Chtimes(clean, mtime, mtime)
@@ -505,6 +525,10 @@ func unpackNAXData(data []byte, outDir string) (int, error) {
 		count++
 	}
 	return count, nil
+}
+
+func recoverNAXData(data []byte, outDir string) (int, error) {
+	return unpackNAXData(data, outDir)
 }
 
 func ExtractNAXEntry(data []byte) ([]byte, error) {

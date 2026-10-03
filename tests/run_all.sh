@@ -1,68 +1,124 @@
 #!/usr/bin/env bash
 
-set -u
+set -uo pipefail
 
-if [ $# -lt 1 ]; then
-  echo "Usage: bash tests/run_all.sh ./path/to/lunex"
-  echo "Error: you must provide an explicit path starting with ./ or /"
+RED=$'\033[31m'
+GREEN=$'\033[32m'
+YELLOW=$'\033[33m'
+CYAN=$'\033[36m'
+GRAY=$'\033[90m'
+BOLD=$'\033[1m'
+RESET=$'\033[0m'
+
+usage() {
+  printf 'Usage: bash tests/run_all.sh ./path/to/lunex\n'
+  printf 'Error: provide an explicit path starting with ./ or /\n'
+}
+
+print_error() {
+  printf '  %bError:%b %s\n' "$RED" "$RESET" "$*" >&2
+}
+
+print_info() {
+  printf '  %bInfo:%b %s\n' "$CYAN" "$RESET" "$*"
+}
+
+if [ "$#" -lt 1 ]; then
+  usage
   exit 1
 fi
 
 LUNEX="$1"
 
 case "$LUNEX" in
-  ./*|/*)
-    ;;
+  ./*|/*) ;;
   *)
-    echo "Error: invalid binary path '$LUNEX'"
-    echo "You must use an explicit path like: ./lunex or /usr/local/bin/lunex"
+    print_error "invalid Lunex binary path '$LUNEX'"
+    printf '  Use an explicit path such as ./lunex or /usr/local/bin/lunex\n'
     exit 1
     ;;
 esac
 
 if [ ! -f "$LUNEX" ]; then
-  echo "Error: binary not found: $LUNEX"
+  print_error "Lunex binary not found: $LUNEX"
   exit 1
 fi
 
 if [ ! -x "$LUNEX" ]; then
-  echo "Info: adding execute permission to $LUNEX"
-  chmod +x "$LUNEX"
-fi
-
-if [ ! -x "$LUNEX" ]; then
-  echo "Error: binary is still not executable: $LUNEX"
-  exit 1
-fi
-
-PASS=0
-FAIL=0
-ERRORS=""
-
-run_test() {
-  file="$1"
-  name=$(basename "$file" .lx)
-  output=$("$LUNEX" run "$file" 2>&1)
-  exitcode=$?
-
-  if [ $exitcode -eq 0 ] && echo "$output" | grep -q "PASS"; then
-    printf "  \033[32m✓\033[0m  %s\n" "$name"
-    PASS=$((PASS + 1))
-  else
-    printf "  \033[31m✗\033[0m  %s\n" "$name"
-    FAIL=$((FAIL + 1))
-    ERRORS="$ERRORS\n    $file"
-
-    first_err=$(echo "$output" | grep -i "error\|type" | head -1)
-    [ -n "$first_err" ] && printf "        \033[90m%s\033[0m\n" "$first_err"
+  print_info "adding execute permission to $LUNEX"
+  if ! chmod +x "$LUNEX"; then
+    print_error "unable to make Lunex executable: $LUNEX"
+    exit 1
   fi
-}
+fi
 
-echo ""
-echo "\033[1mLunex Test Suite\033[0m"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+if [ ! -x "$LUNEX" ]; then
+  print_error "Lunex binary is not executable: $LUNEX"
+  exit 1
+fi
 
 BASE="$(cd "$(dirname "$0")" && pwd)"
+PASS=0
+FAIL=0
+TOTAL=0
+FAILED_TESTS=()
+LOG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/lunex-tests.XXXXXX")"
+
+cleanup() {
+  rm -rf "$LOG_DIR"
+}
+
+trap cleanup EXIT INT TERM
+
+run_test() {
+  local file="$1"
+  local name
+  local log_file
+  local exitcode
+
+  name="$(basename "$file" .lx)"
+  log_file="$LOG_DIR/$(printf '%06d' "$TOTAL").log"
+  TOTAL=$((TOTAL + 1))
+
+  if [[ "$file" == "$BASE/stdlib/ffi/01_ffi_disabled.lx" ]]; then
+    env -u LUNEX_FFI "$LUNEX" run "$file" >"$log_file" 2>&1
+    exitcode=$?
+  elif [[ "$file" == "$BASE/stdlib/ffi/08_ffi_environment_is_ignored.lx" ]]; then
+    LUNEX_FFI=on "$LUNEX" run "$file" >"$log_file" 2>&1
+    exitcode=$?
+  elif [[ "$file" == "$BASE/stdlib/ffi/"*.lx ]]; then
+    "$LUNEX" ffi = on run "$file" >"$log_file" 2>&1
+    exitcode=$?
+  else
+    "$LUNEX" run "$file" >"$log_file" 2>&1
+    exitcode=$?
+  fi
+
+  if [ "$exitcode" -eq 0 ] && grep -Fq 'PASS' "$log_file"; then
+    printf '  %b✓%b  %s\n' "$GREEN" "$RESET" "$name"
+    PASS=$((PASS + 1))
+    return 0
+  fi
+
+  printf '  %b✗%b  %s\n' "$RED" "$RESET" "$name"
+  FAIL=$((FAIL + 1))
+  FAILED_TESTS+=("$file")
+
+  printf '        %bExit code:%b %s\n' "$GRAY" "$RESET" "$exitcode"
+  printf '        %bFull Lunex output:%b\n' "$GRAY" "$RESET"
+
+  if [ -s "$log_file" ]; then
+    sed 's/^/        | /' "$log_file"
+  else
+    printf '        | %b<no output>%b\n' "$GRAY" "$RESET"
+  fi
+
+  printf '\n'
+}
+
+printf '\n'
+printf '%bLunex Test Suite%b\n' "$BOLD" "$RESET"
+printf '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n'
 
 categories=(
   variables
@@ -70,19 +126,21 @@ categories=(
   control_flow
   loops
   structs
-  "stdlib/io"
-  "stdlib/math"
-  "stdlib/utils"
-  "stdlib/json"
-  "stdlib/datetime"
-  "stdlib/crypto"
-  "stdlib/fs"
-  "stdlib/os"
-  "stdlib/regex"
-  "stdlib/db"
-  "stdlib/http"
-  "stdlib/ints"
-  "stdlib/buffer"
+  stdlib/io
+  stdlib/math
+  stdlib/utils
+  stdlib/json
+  stdlib/datetime
+  stdlib/crypto
+  stdlib/fs
+  stdlib/os
+  stdlib/regex
+  stdlib/testing
+  stdlib/ffi
+  stdlib/db
+  stdlib/http
+  stdlib/ints
+  stdlib/buffer
   concurrency
   advanced
 )
@@ -90,28 +148,30 @@ categories=(
 for category in "${categories[@]}"; do
   dir="$BASE/$category"
 
-  if [ -d "$dir" ]; then
-    echo ""
-    printf "\033[1m%s\033[0m\n" "  $category"
-
-    for f in "$dir"/*.lx; do
-      [ -f "$f" ] && run_test "$f"
-    done
+  if [ ! -d "$dir" ]; then
+    continue
   fi
+
+  printf '\n%b%s%b\n' "$BOLD" "  $category" "$RESET"
+
+  while IFS= read -r -d '' file; do
+    run_test "$file"
+  done < <(find "$dir" -maxdepth 1 -type f -name '*.lx' -print0 | sort -z)
 done
 
-TOTAL=$((PASS + FAIL))
-echo ""
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-printf "  passed : \033[32m%d\033[0m / %d\n" "$PASS" "$TOTAL"
-printf "  failed : \033[31m%d\033[0m / %d\n" "$FAIL" "$TOTAL"
-echo ""
+printf '\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n'
+printf '  passed : %b%d%b / %d\n' "$GREEN" "$PASS" "$RESET" "$TOTAL"
+printf '  failed : %b%d%b / %d\n' "$RED" "$FAIL" "$RESET" "$TOTAL"
+printf '\n'
 
 if [ "$FAIL" -gt 0 ]; then
-  printf "  \033[31mFailed tests:\033[0m$ERRORS\n"
-  echo ""
+  printf '  %bFailed tests:%b\n' "$RED" "$RESET"
+  for file in "${FAILED_TESTS[@]}"; do
+    printf '    %s\n' "$file"
+  done
+  printf '\n'
   exit 1
 fi
 
-printf "  \033[32m✓ All %d tests passed.\033[0m\n" "$PASS"
-echo ""
+printf '  %b✓ All %d tests passed.%b\n' "$GREEN" "$PASS" "$RESET"
+printf '\n'

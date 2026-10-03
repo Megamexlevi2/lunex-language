@@ -1,0 +1,152 @@
+val io     = @import("std.io")
+val http   = @import("std.http")
+val router = @import("std.http.router")
+val os     = @import("std.os")
+
+fn check(condition, label) {
+  if !condition {
+    throw "FAIL " + label
+  }
+}
+
+fn showUser(req, res) {
+  res.json({ id: req.params.id })
+}
+
+fn createUser(req, res) {
+  val body = req.json()
+  res.json({ name: body.name, created: true }, 201)
+}
+
+fn removeUser(req, res) {
+  res.end("", 204)
+}
+
+fn readFile(req, res) {
+  res.json({ path: req.params["*"] })
+}
+
+fn me(req, res) {
+  res.json({ me: true })
+}
+
+fn post(req, res) {
+  res.json({ user: req.params.userId, post: req.params.postId })
+}
+
+fn boom(req, res) {
+  throw http.error(422, "invalid payload", "E_APP_INVALID")
+}
+
+fn crash(req, res) {
+  throw "unexpected"
+}
+
+fn noop(req, res) {
+  res.end("")
+}
+
+fn main() {
+  val api = router.create([
+    router.get("/users/me", me),
+    router.get("/users/:id", showUser),
+    router.post("/users", createUser),
+    router.delete("/users/:id", removeUser),
+    router.get("/users/:userId/posts/:postId", post),
+    router.get("/files/*", readFile),
+    router.get("/boom", boom),
+    router.get("/crash", crash)
+  ])
+
+  check(api.find("GET", "/users/me").pattern == "/users/me", "static wins over param")
+  check(api.find("GET", "/users/42").params.id == "42", "param match")
+  check(api.find("GET", "/users/42/").found, "trailing slash")
+  check(api.find("GET", "/users/a%20b").params.id == "a b", "decoded param")
+  check(api.find("GET", "/users/a%2Fb").params.id == "a/b", "encoded slash stays in one segment")
+  check(api.find("GET", "/users//42").found == false, "empty segment rejected")
+  check(api.find("HEAD", "/users/42").found, "head falls back to get")
+  check(api.find("PUT", "/users/42").found == false, "put not found")
+  check(api.find("PUT", "/users/42").allowed.includes("GET"), "allowed lists get")
+  check(api.find("GET", "/files/a/b/c.txt").params["*"] == "a/b/c.txt", "wildcard rest")
+  check(api.find("GET", "/files").params["*"] == "", "wildcard empty")
+  check(api.find("GET", "/users/1/posts/2").params.postId == "2", "two params")
+  check(api.find("GET", "/missing").found == false, "unknown path")
+
+  var duplicate = false
+  try {
+    router.create([router.get("/a/:x", noop), router.get("/a/:y", noop)])
+  } catch (e) {
+    duplicate = true
+  }
+  check(duplicate, "duplicate route rejected")
+
+  var badPath = false
+  try {
+    router.create([router.get("no-slash", noop)])
+  } catch (e) {
+    badPath = true
+  }
+  check(badPath, "path without slash rejected")
+
+  var badParam = false
+  try {
+    router.create([router.get("/a/:id/:id", noop)])
+  } catch (e) {
+    badParam = true
+  }
+  check(badParam, "repeated param rejected")
+
+  var badWildcard = false
+  try {
+    router.create([router.get("/a/*/b", noop)])
+  } catch (e) {
+    badWildcard = true
+  }
+  check(badWildcard, "wildcard in the middle rejected")
+
+  val server = http.createServer(api.handle)
+  server.listen(39218, "127.0.0.1")
+  os.sleep(150)
+  val base = "http://127.0.0.1:39218"
+
+  val one = http.get(base + "/users/42")
+  check(one.status == 200 && one.json().id == "42", "server param")
+
+  val made = http.post(base + "/users", { json: { name: "Ada" } })
+  check(made.status == 201 && made.json().name == "Ada", "server post json")
+
+  val badJson = http.post(base + "/users", { body: "{oops" })
+  check(badJson.status == 400, "invalid json is 400")
+
+  val gone = http.delete(base + "/users/42")
+  check(gone.status == 204, "delete 204")
+
+  val notFound = http.get(base + "/nope")
+  check(notFound.status == 404, "router 404")
+  check(notFound.json().code == "E_ROUTER_NOT_FOUND", "router 404 code")
+
+  val wrong = http.put(base + "/users/42", { body: "x" })
+  check(wrong.status == 405, "router 405")
+  check(wrong.headers["allow"].includes("GET"), "allow header")
+
+  val options = http.request("OPTIONS", base + "/users/42")
+  check(options.status == 204, "auto options")
+  check(options.headers["allow"].includes("DELETE"), "options allow")
+
+  val head = http.head(base + "/users/42")
+  check(head.status == 200 && head.text == "", "head")
+
+  val file = http.get(base + "/files/x/y")
+  check(file.json().path == "x/y", "wildcard over http")
+
+  val typed = http.get(base + "/boom")
+  check(typed.status == 422, "thrown http error status")
+  check(typed.json().error == "invalid payload", "thrown http error message")
+
+  val crashed = http.get(base + "/crash")
+  check(crashed.status == 500, "unexpected error is 500")
+  check(crashed.json().error == "Internal Server Error", "internal error hides details")
+
+  server.close()
+  io.log("PASS http_router")
+}

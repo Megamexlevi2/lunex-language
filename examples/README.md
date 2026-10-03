@@ -1,11 +1,12 @@
 # Lunex Examples
 
-Compatible with Lunex v0.9.2.
+Compatible with Lunex v0.9.3.
 
 ## Running
 
 ```
 lunex run <file.lx>
+lunex pack <file.lx>
 ```
 
 ## Index
@@ -35,6 +36,9 @@ lunex run <file.lx>
 | 21_http_rest.lx           | Full REST server (blocking — run separately) |
 | 22_state_machine.lx       | State machine pattern with transitions and actions |
 | 23_pipeline.lx            | Chainable data pipeline builder pattern |
+| 24_env_dotenv.lx           | std.env dotenv-compatible environment loading |
+| 25_pack_validation.lx     | Pack validation before NAX emission |
+| 26_watch.lx               | Reactive variable and member watching |
 
 ## Notes
 
@@ -43,5 +47,6 @@ lunex run <file.lx>
 - Lunex has no `return` keyword — the last expression in a function is its result
 - `match` supports literal values and `_` wildcard; use `if/else if` chains for ranges
 - `crypto.hmac(algo, key, msg)` — e.g. `crypto.hmac("sha256", key, msg)`
-- HTTP server: `http.createServer(handler)` then `http.listen(server, port, host, cb)`
+- HTTP server: `http.createServer(handler)` then `server.listen(port, host, cb)`
+- HTTP routing: `std.http.router` — `router.create([router.get("/users/:id", handler)])` then `api.listen(port)`
 - Database: `db.table("name")` returns a table object with `.insert()`, `.find()`, `.findOne()`, etc.

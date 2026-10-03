@@ -5,22 +5,7 @@ import (
 	"lunex/internal/ast"
 	"lunex/internal/errfmt"
 	"lunex/internal/resolver"
-	"strings"
 )
-
-func (interp *Interpreter) execLog(node *ast.Node, env *Environment) (*Value, error) {
-	var parts []string
-	for _, arg := range node.Args {
-		val, err := interp.evalExpr(arg, env)
-		if err != nil {
-			parts = append(parts, fmt.Sprintf("<error: %v>", err))
-		} else {
-			parts = append(parts, val.Inspect())
-		}
-	}
-	fmt.Println(strings.Join(parts, " "))
-	return Undefined, nil
-}
 
 func (interp *Interpreter) execIf(node *ast.Node, env *Environment) (*Value, error) {
 	test, err := interp.evalExpr(node.Test, env)
@@ -51,7 +36,17 @@ func (interp *Interpreter) execUnless(node *ast.Node, env *Environment) (*Value,
 }
 
 func (interp *Interpreter) execWhile(node *ast.Node, env *Environment) (*Value, error) {
+	jitDisabled := false
 	for {
+		if !jitDisabled {
+			if handled, deopt, err := interp.runJIT(node, env, -1); err != nil {
+				return nil, err
+			} else if handled {
+				return Undefined, nil
+			} else if deopt {
+				jitDisabled = true
+			}
+		}
 		test, err := interp.evalExpr(node.Test, env)
 		if err != nil {
 			return nil, err
@@ -74,6 +69,9 @@ func (interp *Interpreter) execWhile(node *ast.Node, env *Environment) (*Value, 
 }
 
 func (interp *Interpreter) execForOf(node *ast.Node, env *Environment) (*Value, error) {
+	if node.Right != nil && node.Right.Type == ast.RangeExpr && node.Destructure == nil {
+		return interp.execRangeLoop(node, env)
+	}
 	iterVal, err := interp.evalExpr(node.Right, env)
 	if err != nil {
 		return nil, err
@@ -156,7 +154,17 @@ func (interp *Interpreter) execFor(node *ast.Node, env *Environment) (*Value, er
 		}
 	}
 
+	jitDisabled := false
 	for {
+		if !jitDisabled {
+			if handled, deopt, err := interp.runJIT(node, forEnv, -1); err != nil {
+				return nil, err
+			} else if handled {
+				return Undefined, nil
+			} else if deopt {
+				jitDisabled = true
+			}
+		}
 		if node.Test != nil {
 			test, err := interp.evalExpr(node.Test, forEnv)
 			if err != nil {
@@ -197,7 +205,21 @@ func (interp *Interpreter) execRepeat(node *ast.Node, env *Environment) (*Value,
 		}
 		count = int(n.ToNumber())
 	}
+	jitDisabled := false
 	for i := 0; count < 0 || i < count; i++ {
+		if !jitDisabled {
+			remaining := int64(-1)
+			if count >= 0 {
+				remaining = int64(count - i)
+			}
+			if handled, deopt, err := interp.runJIT(node, env, remaining); err != nil {
+				return nil, err
+			} else if handled {
+				return Undefined, nil
+			} else if deopt {
+				jitDisabled = true
+			}
+		}
 		_, err := interp.execNode(node.Body, env)
 		if err != nil {
 			if _, ok := err.(*breakError); ok {
@@ -213,7 +235,17 @@ func (interp *Interpreter) execRepeat(node *ast.Node, env *Environment) (*Value,
 }
 
 func (interp *Interpreter) execLoop(node *ast.Node, env *Environment) (*Value, error) {
+	jitDisabled := false
 	for {
+		if !jitDisabled {
+			if handled, deopt, err := interp.runJIT(node, env, -1); err != nil {
+				return nil, err
+			} else if handled {
+				return Undefined, nil
+			} else if deopt {
+				jitDisabled = true
+			}
+		}
 		_, err := interp.execNode(node.Body, env)
 		if err != nil {
 			if _, ok := err.(*breakError); ok {
@@ -272,6 +304,13 @@ func (interp *Interpreter) execTry(node *ast.Node, env *Environment) (*Value, er
 						"name":    StringVal("Error"),
 						"stack":   StringVal("Error: " + errMsg),
 					})
+					if le, ok := err.(*errfmt.LunexError); ok {
+						errObj.ObjVal["code"] = StringVal(le.Code)
+						errObj.ObjVal["kind"] = StringVal(string(le.Kind))
+						if le.Phase != "" {
+							errObj.ObjVal["phase"] = StringVal(le.Phase)
+						}
+					}
 					catchEnv.DefineSlot(0, resolver.SlotIndex(node.CatchBlock.ScopeInfo, node.CatchParam), node.CatchParam, errObj, false)
 				}
 				catchResult, _ := interp.execNode(node.CatchBlock, catchEnv)

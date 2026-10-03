@@ -2,6 +2,7 @@ package bytecode
 
 import (
 	"fmt"
+	"lunex/internal/ast"
 	"lunex/internal/compiler"
 	"lunex/internal/runtime"
 	"lunex/internal/std"
@@ -9,6 +10,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 func RunObject(data []byte, ntlLoader func(string) (string, bool), pkgLoader func(string) (string, bool)) error {
@@ -17,6 +19,12 @@ func RunObject(data []byte, ntlLoader func(string) (string, bool), pkgLoader fun
 		return fmt.Errorf("cannot load object: %w", err)
 	}
 	c := newRuntimeCompiler(ntlLoader, pkgLoader)
+	if chunk.AST != nil {
+		if chunk.Optimized {
+			return c.RunOptimizedAST(chunk.AST, chunk.SourceFile)
+		}
+		return c.RunAST(chunk.AST, chunk.SourceFile, "")
+	}
 	return c.RunSource(chunk.SourceText, chunk.SourceFile)
 }
 
@@ -25,61 +33,159 @@ func RunNAX(data []byte, ntlLoader func(string) (string, bool), pkgLoader func(s
 	if err != nil {
 		return fmt.Errorf("cannot load archive: %w", err)
 	}
-
 	if len(arch.Entries) == 0 {
 		return fmt.Errorf("entry not found in archive: <empty>")
 	}
+
+	if len(arch.Entries) == 1 {
+		c := newFastRuntimeCompiler(ntlLoader, pkgLoader)
+		return RunNAXEntryWithCompiler(arch.Entries[0], c)
+	}
+
+	archiveSources, archiveEntries := prepareArchiveEntries(arch.Entries)
+	archiveASTLoader, archiveSourceLoader := makeArchiveLoaders(archiveSources, archiveEntries)
+
+	combinedLoader := archiveSourceLoader
+	if ntlLoader != nil {
+		combinedLoader = func(name string) (string, bool) {
+			if src, ok := archiveSourceLoader(name); ok {
+				return src, true
+			}
+			return ntlLoader(name)
+		}
+	}
+	c := newFastRuntimeCompiler(combinedLoader, pkgLoader)
+	c.Interpreter().SetASTLoader(archiveASTLoader)
 
 	idx := int(arch.MainIndex)
 	if idx < 0 || idx >= len(arch.Entries) {
 		idx = 0
 	}
+	return RunNAXEntryWithCompiler(arch.Entries[idx], c)
+}
 
-	archiveSources := make(map[string]string)
-	addArchiveSource := func(name, src string) {
-		key := normalizeArchiveKey(name)
-		if key != "" {
-			archiveSources[key] = src
+func prepareArchiveEntries(entries []NAXEntry) (map[string]string, map[string]NAXEntry) {
+	sources := make(map[string]string)
+	compiled := make(map[string]NAXEntry)
+	for _, e := range entries {
+		key := normalizeArchiveKey(e.Name)
+		if e.Kind == NAXEntrySource {
+			sources[key] = string(e.Data)
+			sources[normalizeArchiveKey(strings.TrimSuffix(e.Name, filepath.Ext(e.Name)))] = string(e.Data)
+			continue
 		}
-		if strings.HasSuffix(strings.ToLower(key), ".lx") {
-			archiveSources[normalizeArchiveKey(strings.TrimSuffix(key, ".lx"))] = src
-		}
-	}
-	for _, e := range arch.Entries {
-		lower := strings.ToLower(e.Name)
-		switch {
-		case strings.HasSuffix(lower, ".lx"):
-			addArchiveSource(e.Name, string(e.Data))
-		case strings.HasSuffix(lower, ".nax"):
-			if chunk, err := DecodeObject(e.Data); err == nil {
-				addArchiveSource(strings.TrimSuffix(e.Name, ".nax")+".lx", chunk.SourceText)
+		if IsNAXCompiledEntry(e) {
+			base := normalizeArchiveKey(strings.TrimSuffix(e.Name, filepath.Ext(e.Name)))
+			if base != "" {
+				compiled[base] = e
+				compiled[normalizeArchiveKey(base+".lx")] = e
 			}
 		}
 	}
+	return sources, compiled
+}
 
-	archiveLoader := func(name string) (string, bool) {
-		if src, ok := archiveSources[normalizeArchiveKey(name)]; ok {
-			return src, true
+func makeArchiveLoaders(sources map[string]string, entries map[string]NAXEntry) (func(string) (*ast.Node, string, bool), func(string) (string, bool)) {
+	astCache := make(map[string]struct {
+		tree *ast.Node
+		path string
+	})
+	sourceCache := make(map[string]string)
+	var cacheMu sync.RWMutex
+
+	findEntry := func(name string) (NAXEntry, bool) {
+		for _, key := range archiveLookupKeys(name) {
+			if entry, ok := entries[key]; ok {
+				return entry, true
+			}
 		}
-		if !strings.HasSuffix(strings.ToLower(name), ".lx") {
-			if src, ok := archiveSources[normalizeArchiveKey(name+".lx")]; ok {
+		return NAXEntry{}, false
+	}
+
+	findSource := func(name string) (string, bool) {
+		for _, key := range archiveLookupKeys(name) {
+			if src, ok := sources[key]; ok {
+				return src, true
+			}
+			cacheMu.RLock()
+			src, ok := sourceCache[key]
+			cacheMu.RUnlock()
+			if ok {
 				return src, true
 			}
 		}
 		return "", false
 	}
 
-	combinedLoader := archiveLoader
-	if ntlLoader != nil {
-		combinedLoader = func(name string) (string, bool) {
-			if src, ok := archiveLoader(name); ok {
-				return src, true
+	astLoader := func(name string) (*ast.Node, string, bool) {
+		for _, key := range archiveLookupKeys(name) {
+			cacheMu.RLock()
+			item, ok := astCache[key]
+			cacheMu.RUnlock()
+			if ok {
+				return item.tree, item.path, true
 			}
-			return ntlLoader(name)
 		}
+		entry, ok := findEntry(name)
+		if !ok {
+			return nil, "", false
+		}
+		chunk, err := DecodeNAXEntry(entry)
+		if err != nil || chunk.AST == nil {
+			return nil, "", false
+		}
+		path := entry.SourceFile
+		if path == "" {
+			path = entry.Name
+		}
+		item := struct {
+			tree *ast.Node
+			path string
+		}{chunk.AST, path}
+		base := normalizeArchiveKey(strings.TrimSuffix(entry.Name, filepath.Ext(entry.Name)))
+		cacheMu.Lock()
+		for _, key := range archiveLookupKeys(name) {
+			astCache[key] = item
+		}
+		astCache[base] = item
+		astCache[normalizeArchiveKey(base+".lx")] = item
+		if entry.SourceText != "" {
+			sourceCache[base] = entry.SourceText
+			sourceCache[normalizeArchiveKey(base+".lx")] = entry.SourceText
+		}
+		cacheMu.Unlock()
+		return item.tree, item.path, true
 	}
 
-	return RunObject(arch.Entries[idx].Data, combinedLoader, pkgLoader)
+	sourceLoader := func(name string) (string, bool) {
+		if src, ok := findSource(name); ok {
+			return src, true
+		}
+		entry, ok := findEntry(name)
+		if !ok || entry.SourceText == "" {
+			return "", false
+		}
+		base := normalizeArchiveKey(strings.TrimSuffix(entry.Name, filepath.Ext(entry.Name)))
+		cacheMu.Lock()
+		sourceCache[base] = entry.SourceText
+		sourceCache[normalizeArchiveKey(base+".lx")] = entry.SourceText
+		cacheMu.Unlock()
+		return entry.SourceText, true
+	}
+
+	return astLoader, sourceLoader
+}
+
+func archiveLookupKeys(name string) []string {
+	key := normalizeArchiveKey(name)
+	if key == "" {
+		return nil
+	}
+	keys := []string{key}
+	if !strings.HasSuffix(strings.ToLower(key), ".lx") {
+		keys = append(keys, normalizeArchiveKey(key+".lx"))
+	}
+	return keys
 }
 
 func RunNAXFile(path string, ntlLoader func(string) (string, bool), pkgLoader func(string) (string, bool)) error {
@@ -103,79 +209,68 @@ func LoadNAXAsModule(filePath string, c *compiler.Compiler) (*runtime.Value, err
 	if err != nil {
 		return nil, fmt.Errorf("cannot read %s: %w", filePath, err)
 	}
-
 	arch, err := decodeNAX(data)
 	if err != nil {
 		return nil, fmt.Errorf("cannot decode archive %s: %w", filePath, err)
 	}
-
 	if len(arch.Entries) == 0 {
 		return nil, fmt.Errorf("archive %s has no entries", filePath)
 	}
-
-	archiveSources := make(map[string]string)
-	for _, e := range arch.Entries {
-		lower := strings.ToLower(e.Name)
-		switch {
-		case strings.HasSuffix(lower, ".lx"):
-			key := normalizeArchiveKey(e.Name)
-			archiveSources[key] = string(e.Data)
-
-			archiveSources[normalizeArchiveKey(strings.TrimSuffix(e.Name, ".lx"))] = string(e.Data)
-		case strings.HasSuffix(lower, ".nax"):
-			if chunk, err2 := DecodeObject(e.Data); err2 == nil {
-				key := normalizeArchiveKey(strings.TrimSuffix(e.Name, ".nax"))
-				archiveSources[key] = chunk.SourceText
-				archiveSources[normalizeArchiveKey(strings.TrimSuffix(e.Name, ".nax")+".lx")] = chunk.SourceText
-			}
-		}
-	}
-
-	archiveLoader := func(name string) (string, bool) {
-		k := normalizeArchiveKey(name)
-		if src, ok := archiveSources[k]; ok {
-			return src, true
-		}
-		if !strings.HasSuffix(strings.ToLower(name), ".lx") {
-			if src, ok := archiveSources[normalizeArchiveKey(name+".lx")]; ok {
-				return src, true
-			}
-		}
-		return "", false
-	}
-
+	archiveSources, archiveEntries := prepareArchiveEntries(arch.Entries)
+	archiveASTLoader, archiveSourceLoader := makeArchiveLoaders(archiveSources, archiveEntries)
 	prev := c.Interpreter().NTLLoader()
-	combinedLoader := archiveLoader
+	combinedLoader := archiveSourceLoader
 	if prev != nil {
 		combinedLoader = func(name string) (string, bool) {
-			if src, ok := archiveLoader(name); ok {
+			if src, ok := archiveSourceLoader(name); ok {
 				return src, true
 			}
 			return prev(name)
 		}
 	}
 	c.Interpreter().SetNTLLoader(combinedLoader)
-	defer func() { c.Interpreter().SetNTLLoader(prev) }()
-
+	prevAST := c.Interpreter().ASTLoader()
+	c.Interpreter().SetASTLoader(archiveASTLoader)
+	defer func() {
+		c.Interpreter().SetNTLLoader(prev)
+		c.Interpreter().SetASTLoader(prevAST)
+	}()
 	idx := int(arch.MainIndex)
 	if idx < 0 || idx >= len(arch.Entries) {
 		idx = 0
 	}
 	mainEntry := arch.Entries[idx]
-	var src string
-	switch strings.ToLower(filepath.Ext(mainEntry.Name)) {
-	case ".nax":
-		chunk, err2 := DecodeObject(mainEntry.Data)
-		if err2 != nil {
-			return nil, fmt.Errorf("cannot decode main entry in %s: %w", filePath, err2)
-		}
-		src = chunk.SourceText
-	default:
-		src = string(mainEntry.Data)
+	moduleFilename := filepath.Join(filepath.Dir(filePath), mainEntry.Name)
+	chunk, err := DecodeNAXEntry(mainEntry)
+	if err != nil {
+		return nil, fmt.Errorf("cannot decode main entry in %s: %w", filePath, err)
+	}
+	if chunk.AST != nil {
+		return c.Interpreter().ExecASTAsModule(chunk.AST, moduleFilename)
+	}
+	return c.RunSourceAsModule(chunk.SourceText, moduleFilename)
+}
+
+func newFastRuntimeCompiler(ntlLoader func(string) (string, bool), pkgLoader func(string) (string, bool)) *compiler.Compiler {
+	c := compiler.New(compiler.DefaultOptions)
+	std.RegisterLazy(c)
+	if ntlLoader != nil {
+		c.Interpreter().SetNTLLoader(ntlLoader)
+	}
+	if pkgLoader != nil {
+		c.Interpreter().SetPkgLoader(pkgLoader)
 	}
 
-	moduleFilename := filepath.Join(filepath.Dir(filePath), mainEntry.Name)
-	return c.RunSourceAsModule(src, moduleFilename)
+	c.Interpreter().SetNaxLoader(func(absPath string) (*runtime.Value, error) {
+		ext := strings.ToLower(filepath.Ext(absPath))
+		switch ext {
+		case ".nax":
+			return LoadNAXAsModule(absPath, c)
+		default:
+			return nil, fmt.Errorf("unsupported binary module extension: %s", ext)
+		}
+	})
+	return c
 }
 
 func newRuntimeCompiler(ntlLoader func(string) (string, bool), pkgLoader func(string) (string, bool)) *compiler.Compiler {
@@ -243,4 +338,32 @@ func BuildNCFile(sourcePath string, outputPath string) error {
 	}
 
 	return os.WriteFile(outputPath, nc, 0644)
+}
+
+func RunNAXEntryWithCompiler(entry NAXEntry, c *compiler.Compiler) error {
+	if entry.Kind == NAXEntryArchive {
+		return RunNAX(entry.Data, c.Interpreter().NTLLoader(), c.Interpreter().NTLLoader())
+	}
+	chunk, err := DecodeNAXEntry(entry)
+	if err != nil {
+		return fmt.Errorf("cannot load NAX entry %q: %w", entry.Name, err)
+	}
+	if chunk.AST != nil {
+		return c.RunOptimizedAST(chunk.AST, chunk.SourceFile)
+	}
+	return c.RunSource(chunk.SourceText, chunk.SourceFile)
+}
+
+func RunObjectWithCompiler(data []byte, c *compiler.Compiler) error {
+	chunk, err := DecodeObject(data)
+	if err != nil {
+		return fmt.Errorf("cannot load object: %w", err)
+	}
+	if chunk.AST != nil {
+		if chunk.Optimized {
+			return c.RunOptimizedAST(chunk.AST, chunk.SourceFile)
+		}
+		return c.RunAST(chunk.AST, chunk.SourceFile, "")
+	}
+	return c.RunSource(chunk.SourceText, chunk.SourceFile)
 }

@@ -33,53 +33,33 @@ var httpServerTemplate = &projectTemplate{
 	id:          "http_server",
 	description: "A REST HTTP server with JSON routes",
 	files: func(name string) []templateFile {
-		main := `val http = @import("std.http")
-val io   = @import("std.io")
+		main := `val http   = @import("std.http")
+val router = @import("std.http.router")
+val io     = @import("std.io")
 
 val port = 3000
 
-fn homeHandler(res) {
-  http.json(res, struct {
-    message = "` + name + ` is running"
-    version = "1.0.0"
-  }, 200)
+fn home(req, res) {
+  res.json({ message: "` + name + ` is running", version: "1.0.0" })
 }
 
-fn healthHandler(res) {
-  http.json(res, struct {
-    status = "ok"
-  }, 200)
+fn health(req, res) {
+  res.json({ status: "ok" })
 }
 
-fn echoHandler(req, res) {
-  http.json(res, struct {
-    method = req.method
-    url    = req.url
-    query  = req.query
-  }, 200)
+fn echo(req, res) {
+  res.json({ method: req.method, url: req.url, query: req.query })
 }
 
-fn notFoundHandler(res) {
-  http.json(res, struct {
-    error = "not found"
-  }, 404)
-}
-
-val server = http.createServer(fn(req, res) {
-  if req.method == "GET" and req.url == "/" {
-    homeHandler(res)
-  } else if req.method == "GET" and req.url == "/health" {
-    healthHandler(res)
-  } else if req.method == "GET" and req.url == "/echo" {
-    echoHandler(req, res)
-  } else {
-    notFoundHandler(res)
-  }
-})
+val api = router.create([
+  router.get("/", home),
+  router.get("/health", health),
+  router.get("/echo", echo)
+])
 
 fn main() {
-  http.listen(server, port, "0.0.0.0", fn() {
-    io.log(io.green("` + name + ` listening on http://localhost:" + str(port)))
+  api.listen(port, "0.0.0.0", fn(actual) {
+    io.log(io.green("` + name + ` listening on http://localhost:" + str(actual)))
     io.log("  GET /        -> server info")
     io.log("  GET /health  -> health check")
     io.log("  GET /echo    -> echo request info")
@@ -132,6 +112,7 @@ fn main() {
     id:    { type: "string", default: "$uuid" }
     name:  { type: "string", required: true }
     email: { type: "string", required: true, unique: true }
+    active:{ type: "boolean", default: true }
     age:   { type: "number", default: 0 }
   })
 
@@ -146,7 +127,7 @@ fn main() {
 
   io.log("Total users:", users.count())
 
-  val adults = users.where({ age: { $gte: 18 } }).orderBy("age").exec()
+  val adults = users.where("age", ">=", 18).orderBy("age").find()
   io.log("Users 18+:")
   each u in adults {
     io.log(" -", u.name, u.email, "age:", u.age)
@@ -183,7 +164,7 @@ SQL and ` + "`json_extract()`" + ` also work directly against the file.
 - ` + "`table.schema({...})`" + ` — declare field types, defaults, and constraints
 - ` + "`table.insert(doc)`" + ` / ` + "`insertMany`" + ` / ` + "`upsert`" + `
 - ` + "`table.find(filter)`" + ` / ` + "`findOne`" + ` / ` + "`findById`" + `
-- ` + "`table.where(filter).orderBy(field).limit(n).exec()`" + ` — query builder
+- ` + "`table.where(filter).orderBy(field).limit(n).find()`" + ` — query builder
 - ` + "`table.update(filter, changes)`" + ` / ` + "`delete(filter)`" + `
 - ` + "`table.index(fields)`" + ` — create a real SQL index
 - ` + "`table.aggregate(pipeline)`" + ` — grouping and aggregation pipeline
@@ -199,34 +180,41 @@ var websiteTemplate = &projectTemplate{
 	id:          "website",
 	description: "A small static website served by the built-in HTTP server",
 	files: func(name string) []templateFile {
-		main := `val http = @import("std.http")
-val fs   = @import("std.fs")
-val io   = @import("std.io")
+		main := `val http   = @import("std.http")
+val router = @import("std.http.router")
+val fs     = @import("std.fs")
+val io     = @import("std.io")
 
 val port = 3000
 
-fn serveHTML(res, path, status) {
-  val body = fs.readFile(path)
-  if body == null {
-    http.text(res, "Not found", 404)
+fn sendPage(res, path, status) {
+  if fs.exists(path) {
+    res.html(fs.readFile(path), status)
   } else {
-    http.html(res, body, status)
+    res.text("Not found", 404)
   }
 }
 
-val server = http.createServer(fn(req, res) {
-  if req.url == "/" {
-    serveHTML(res, "./public/index.html", 200)
-  } else if req.url == "/about" {
-    serveHTML(res, "./public/about.html", 200)
-  } else {
-    serveHTML(res, "./public/404.html", 404)
-  }
-})
+fn home(req, res) {
+  sendPage(res, "./public/index.html", 200)
+}
+
+fn about(req, res) {
+  sendPage(res, "./public/about.html", 200)
+}
+
+fn missing(req, res) {
+  sendPage(res, "./public/404.html", 404)
+}
+
+val api = router.create([
+  router.get("/", home),
+  router.get("/about", about)
+], { notFound: missing })
 
 fn main() {
-  http.listen(server, port, "0.0.0.0", fn() {
-    io.log(io.green("` + name + ` listening on http://localhost:" + str(port)))
+  api.listen(port, "0.0.0.0", fn(actual) {
+    io.log(io.green("` + name + ` listening on http://localhost:" + str(actual)))
     io.log("  GET /       -> home page")
     io.log("  GET /about  -> about page")
   })
@@ -329,7 +317,7 @@ Then open http://localhost:3000
 - ` + "`public/404.html`" + ` — not found page
 
 CSS and JavaScript are inlined directly in each HTML page, since they are
-served with ` + "`http.html()`" + `, which always returns ` + "`text/html`" + ` responses.
+served with ` + "`res.html()`" + `, which always returns ` + "`text/html`" + ` responses.
 `
 		return []templateFile{
 			{"main.lx", main},

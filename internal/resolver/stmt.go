@@ -2,12 +2,6 @@ package resolver
 
 import "lunex/internal/ast"
 
-// resolveStmt resolves a single statement node against sc. This mirrors,
-// one case at a time, every place internal/runtime creates a new
-// Environment (see exec.go, control.go, declarations.go, literals.go,
-// functions.go, classes.go, misc.go, modules.go) so that the frames the
-// resolver models line up exactly with the frames the runtime actually
-// allocates at execution time.
 func (r *resolver) resolveStmt(node *ast.Node, sc *scope) {
 	if node == nil {
 		return
@@ -25,9 +19,7 @@ func (r *resolver) resolveStmt(node *ast.Node, sc *scope) {
 		}
 
 	case ast.FnDecl:
-		// The function's own name binds in the *enclosing* scope (it's
-		// callable from sibling statements), matching
-		// runtime.execFnDecl's env.Define on the incoming env.
+
 		r.declareIfLocal(sc, node.Name)
 		r.resolveFunctionBody(node, sc)
 
@@ -37,10 +29,7 @@ func (r *resolver) resolveStmt(node *ast.Node, sc *scope) {
 			r.resolveExpr(node.SuperClass, sc)
 		}
 		for _, member := range node.Methods {
-			// Methods run with their own fresh Environment parented on
-			// the class's defining Env (see runtime.execClassDecl /
-			// callUserFunction) -- same shape as a standalone function
-			// body, just without a named enclosing declaration.
+
 			body := member.Body
 			if member.Init != nil {
 				body = member.Init
@@ -58,12 +47,7 @@ func (r *resolver) resolveStmt(node *ast.Node, sc *scope) {
 
 	case ast.NamespaceDecl:
 		r.declareIfLocal(sc, node.Name)
-		// runtime.execNamespace builds the namespace's Environment and
-		// then calls Snapshot() to turn it into a plain object -- i.e.
-		// the whole point of that frame is dynamic enumeration by name.
-		// Give it its own scope so inner declarations don't pollute the
-		// enclosing one, but mark it dynamic so nothing inside gets slot
-		// addresses that Snapshot() couldn't also produce correctly.
+
 		nsScope := newScope(sc, nil)
 		nsScope.dynamic = true
 		r.resolveStmts(node.Body_, nsScope)
@@ -96,7 +80,6 @@ func (r *resolver) resolveStmt(node *ast.Node, sc *scope) {
 		}
 
 	case ast.BreakStmt, ast.ContinueStmt:
-		// no bindings, no sub-expressions
 
 	case ast.IfStmt, ast.UnlessStmt:
 		r.resolveExpr(node.Test, sc)
@@ -110,9 +93,7 @@ func (r *resolver) resolveStmt(node *ast.Node, sc *scope) {
 		r.resolveStmt(node.Body, sc)
 
 	case ast.ForStmt:
-		// runtime.execFor allocates one forEnv that holds Init and is
-		// reused, unchanged, across every iteration (Test/Body/Right all
-		// evaluate against the same forEnv). Model that as one frame.
+
 		forScope := newScope(sc, node)
 		if node.Init != nil {
 			r.resolveStmt(node.Init, forScope)
@@ -130,9 +111,7 @@ func (r *resolver) resolveStmt(node *ast.Node, sc *scope) {
 
 	case ast.ForOfStmt, ast.EachInStmt:
 		r.resolveExpr(node.Right, sc)
-		// runtime.execForOf allocates a fresh iterEnv per iteration, but
-		// its shape (which names it declares) is identical every time,
-		// so one ScopeInfo describes every iteration's frame.
+
 		iterScope := newScope(sc, node)
 		if node.Destructure != nil {
 			r.declareDestructure(iterScope, node.Destructure)
@@ -172,12 +151,7 @@ func (r *resolver) resolveStmt(node *ast.Node, sc *scope) {
 		}
 
 	case ast.SpawnStmt:
-		// runtime executes node.Expr directly against the *current* env
-		// from a new goroutine (after MarkEscaped), so it resolves like
-		// any other expression in this scope; the resolved addresses
-		// remain valid since the goroutine reads the same Environment
-		// chain, just concurrently (which is exactly what MarkEscaped's
-		// locking already protects against).
+
 		if node.Expr != nil {
 			r.resolveExpr(node.Expr, sc)
 		}
@@ -198,10 +172,7 @@ func (r *resolver) resolveStmt(node *ast.Node, sc *scope) {
 		if node.Expr != nil {
 			r.resolveExpr(node.Expr, sc)
 		}
-		// runtime.execWith populates withEnv from the *runtime* keys of
-		// an arbitrary object -- there is no static name set. Mark the
-		// frame dynamic so nothing inside (and nothing that would need
-		// to hop across it) gets a slot address.
+
 		withScope := newScope(sc, nil)
 		withScope.dynamic = true
 		r.resolveStmt(node.Body, withScope)
@@ -231,9 +202,7 @@ func (r *resolver) resolveStmt(node *ast.Node, sc *scope) {
 		}
 		haveScope.finish()
 		if node.Alternate != nil {
-			// The alternate/else branch runs in the *outer* scope in
-			// both execHave and execIfHave (the `have`-bound alias is
-			// only in scope on the success path).
+
 			r.resolveStmt(node.Alternate, sc)
 		}
 
@@ -242,10 +211,7 @@ func (r *resolver) resolveStmt(node *ast.Node, sc *scope) {
 			r.resolveExpr(node.Expr, sc)
 		}
 		ifSetScope := newScope(sc, node)
-		// runtime.execIfSet synthesizes "_ifset_<id>" when Alias=="", but
-		// that name is only ever looked up dynamically by the same
-		// synthesized string, never by a resolvable Identifier node, so
-		// we still track it for slot bookkeeping/name completeness.
+
 		alias := node.Alias
 		if alias == "" {
 			alias = syntheticIfSetName(node.ID)
@@ -265,17 +231,9 @@ func (r *resolver) resolveStmt(node *ast.Node, sc *scope) {
 		}
 
 	case ast.ImportDecl, ast.ExportDecl, ast.LunexRequire, ast.UseStmt:
-		// Module-linkage statements introduce module-level bindings whose
-		// availability depends on the loader/module graph, not purely on
-		// lexical position. Left on the existing dynamic/name-based path.
 
 	case ast.DeferStmt:
-		// The deferred node.Body/node.Expr is executed later, against the
-		// *same* env captured at defer-time (see deferEntry in
-		// interp.go), still within the same function activation. It's
-		// safe to resolve now against the current sc: the frame it
-		// addresses is still alive (and unreleased) when the defer runs,
-		// since callUserFunction only releases fnEnv after running defers.
+
 		if node.Body != nil {
 			r.resolveStmt(node.Body, sc)
 		} else if node.Expr != nil {
@@ -283,18 +241,10 @@ func (r *resolver) resolveStmt(node *ast.Node, sc *scope) {
 		}
 
 	default:
-		// Any statement kind not explicitly handled above is left alone:
-		// its identifiers stay unannotated and fall back to the
-		// existing, always-correct name-based Environment lookup.
+
 	}
 }
 
-// resolveBlock resolves a Block node. It only allocates a new scope when
-// the runtime itself would allocate a new Environment for this block (see
-// runtime.blockNeedsOwnScope) -- for blocks that execute directly in the
-// parent Environment, statements resolve straight against sc so their
-// bindings (there are none, by definition of blockNeedsOwnScope) don't
-// need their own frame.
 func (r *resolver) resolveBlock(node *ast.Node, sc *scope) {
 	if !blockDeclaresBindings(node) {
 		r.resolveStmts(node.Body_, sc)
@@ -305,10 +255,6 @@ func (r *resolver) resolveBlock(node *ast.Node, sc *scope) {
 	blockScope.finish()
 }
 
-// blockDeclaresBindings mirrors runtime.blockNeedsOwnScope's decision
-// criteria exactly, without depending on that unexported function or on
-// its cache (the resolver runs once, ahead of execution, so there's no
-// reuse to cache here).
 func blockDeclaresBindings(node *ast.Node) bool {
 	for _, stmt := range node.Body_ {
 		if stmt == nil {
@@ -325,7 +271,7 @@ func blockDeclaresBindings(node *ast.Node) bool {
 }
 
 func syntheticIfSetName(id int) string {
-	// Matches fmt.Sprintf("_ifset_%d", node.ID) in runtime.execIfSet.
+
 	const prefix = "_ifset_"
 	if id == 0 {
 		return prefix + "0"

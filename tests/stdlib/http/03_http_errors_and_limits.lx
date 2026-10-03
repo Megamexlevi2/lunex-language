@@ -1,0 +1,94 @@
+val io   = @import("std.io")
+val http = @import("std.http")
+val os   = @import("std.os")
+
+fn check(condition, label) {
+  if !condition {
+    throw "FAIL " + label
+  }
+}
+
+fn twice(req, res) {
+  res.text("first")
+  var blocked = false
+  try {
+    res.text("second")
+  } catch (e) {
+    blocked = e.code == "E_HTTP_RESPONSE_FINISHED"
+  }
+  check(blocked, "double response throws")
+}
+
+fn echo(req, res) {
+  res.text(req.text())
+}
+
+fn silent(req, res) {
+  null
+}
+
+fn main() {
+  val handlers = {
+    "/twice": twice,
+    "/echo": echo,
+    "/silent": silent
+  }
+
+  val server = http.createServer(fn(req, res) {
+    val handler = handlers[req.path]
+    if handler == null {
+      res.json({ error: "not found" }, 404)
+    } else {
+      handler(req, res)
+    }
+  }, { maxBodyBytes: 16, handlerTimeout: 300, onError: fn(err, req, res) {
+    res.json({ error: "custom", code: err.code }, 500)
+  } })
+  server.listen(39219, "127.0.0.1")
+  os.sleep(150)
+  val base = "http://127.0.0.1:39219"
+
+  val first = http.get(base + "/twice")
+  check(first.text == "first", "only first response is sent")
+
+  val small = http.post(base + "/echo", { body: "tiny" })
+  check(small.text == "tiny", "small body accepted")
+
+  val large = http.post(base + "/echo", { body: "0123456789012345678901234567890123456789" })
+  check(large.status == 413, "large body rejected")
+  check(large.json().code == "E_HTTP_BODY_TOO_LARGE", "large body code")
+
+  val slow = http.get(base + "/silent")
+  check(slow.status == 504, "handler timeout")
+
+  var invalid = false
+  try {
+    http.createServer(echo, { unknownOption: 1 })
+  } catch (e) {
+    invalid = e.code == "E_HTTP_INVALID_ARGUMENT"
+  }
+  check(invalid, "unknown server option rejected")
+
+  var badUrl = false
+  try {
+    http.get("ftp://example.com")
+  } catch (e) {
+    badUrl = e.code == "E_HTTP_INVALID_URL"
+  }
+  check(badUrl, "non-http url rejected")
+
+  var badBody = false
+  try {
+    http.post(base + "/echo", { body: { a: 1 } })
+  } catch (e) {
+    badBody = e.code == "E_HTTP_INVALID_ARGUMENT"
+  }
+  check(badBody, "object body needs explicit json option")
+
+  val refused = http.get("http://127.0.0.1:1/", { timeout: 2000 })
+  check(!refused.ok && refused.status == 0, "connection failure is a result")
+  check(refused.errorCode != null, "connection failure has a code")
+
+  server.close()
+  io.log("PASS http_errors_and_limits")
+}

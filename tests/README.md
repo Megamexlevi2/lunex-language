@@ -1,12 +1,12 @@
 # Lunex Test Suite
 
-106 tests covering every major feature of the language and standard library.
+129 tests covering the major language and standard library features.
 
 ## Running all tests
 
 ```bash
 ./tests/run_all.sh
-# or specify a binary path:
+
 ./tests/run_all.sh ./lunex
 ```
 
@@ -23,7 +23,7 @@ lunex run tests/variables/01_val_basic.lx
 | `variables/` | 10 | `val`, `var`, strings, numbers, booleans, null, arrays, objects, destructuring |
 | `functions/` | 10 | Basic functions, closures, higher-order, recursion, first-class, memoize, implicit/explicit return |
 | `control_flow/` | 10 | `if`/`else`, nested conditions, `guard`, `unless`, `match` literals, `match` ranges, `match` as expression, `defer`, short-circuit |
-| `loops/` | 8 | `while`, `break`, `continue`, `each` over arrays/strings/objects, nested loops |
+| `loops/` | 10 | `while`, `break`, `continue`, `each` over arrays/strings/objects, nested loops |
 | `structs/` | 8 | Fields, methods, `this`, factory functions, composition, event emitter, linked list, state machine, builder |
 | `stdlib/io/` | 5 | `log`, `warn`, `err`, `info`, `success`, `table`, template formatting, spinner |
 | `stdlib/math/` | 5 | `sqrt`, `pow`, `abs`, `floor`, `ceil`, `round`, constants, trig, random, statistics |
@@ -34,10 +34,15 @@ lunex run tests/variables/01_val_basic.lx
 | `stdlib/fs/` | 5 | Write/read, exists, append, readLines, stat |
 | `stdlib/os/` | 5 | Platform, env vars, exec, args, cwd |
 | `stdlib/regex/` | 5 | `match`, `findAll`, `replace`, `split`, capture groups |
+| `stdlib/testing/` | 2 | Test registration, groups, lifecycle hooks, parameterized cases, assertions, retries, tags, snapshots, and summaries |
+| `stdlib/ffi/` | 8 | FFI permission state, native library loading, symbol binding, calls, pointers, memory, strings, callbacks, descriptors, and ABI metadata |
+| `stdlib/ints/` | 4 | Integer and bitwise operations |
+| `stdlib/buffer/` | 4 | Buffer creation, conversion, slicing, and operations |
+| `stdlib/http/` | 7 | Server basics, router matching, limits and timeouts, static files, URL and cookie helpers |
 | `concurrency/` | 5 | Basic channel, fan-out, pipeline, worker pool, collect |
 | `advanced/` | 9 | Closures, data pipeline, observer, retry/backoff, lazy eval, middleware, event loop, runtime introspection, comprehensive |
 
-**Total: 106 tests**
+**Total: 138 tests**
 
 ## Test file naming
 

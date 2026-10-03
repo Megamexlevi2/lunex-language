@@ -14,6 +14,23 @@ Complete reference for the `lunex` command-line tool and its built-in package ma
 | `--version`        | Print version and exit                                   |
 | `--help`           | Print usage and exit                                     |
 
+### Native FFI control
+
+FFI is disabled by default. The switch is a command-line prefix and applies
+only to the current Lunex process. It is not read from source code or from an
+environment variable.
+
+```bash
+lunex ffi = on run main.lx
+lunex ffi = off run main.lx
+```
+
+`ffi = on` is intentionally accepted only before the command. Values supplied
+inside a Lunex program or through process environment variables do not change
+the FFI state. Build scripts use `CGO_ENABLED=0`. Android arm64 builds use the Android Go
+target, position-independent executable mode, and the Bionic ABI. The FFI backend
+uses goffi through the purego-compatible layer and does not require a C compiler.
+
 ---
 
 ## Commands
@@ -36,7 +53,7 @@ Supported file extensions:
 | Extension | Description               |
 |-----------|---------------------------|
 | `.lx`     | Lunex source file |
-| `.nax`    | Compiled archive  |
+| `.nax`    | Compiled NAX archive |
 
 **Examples:**
 
@@ -107,189 +124,26 @@ lunex -e 'val io = @import("std.io"); fn main() { io.log("hello") }'
 
 ---
 
-### `lunex build`
-
-Compile a `.lx` source file or project entry to an archive.
-
-```
-lunex build [file] [-o <output>]
-```
-
-Without arguments, reads `lunex.toml` in the current directory and
-compiles its declared entry point (fails with an error if no `lunex.toml`
-is found).
-
-| Flag            | Description                                          |
-|-----------------|------------------------------------------------------|
-| `-o <file>`     | Output path (default: `<input>.nax`) |
-| `--format nax`  | Output as a `.nax` archive          |
-
-**Examples:**
-
-```bash
-lunex build main.lx -o dist/app.nax
-lunex build src/math.lx -o dist/math.nax --format nax
-```
-
----
-
-### `lunex check`
-
-Check a file for errors without running it.
-
-```
-lunex check <file>
-```
-
-Exits with code `0` when the source and its dependency graph pass checking. Exits
-with code `1` when any error is found. The checker parses imported `.lx` and `.nax`
-modules, resolves local and installed imports, indexes declarations and exports,
-checks scopes and references, validates function arity, immutable assignments,
-module members, export/import consistency, control-flow context, duplicate names,
-top-level rules, import cycles, and the executable `main` entry point without
-running user code.
-
-Use `--debug` for checker phase tracing and `--verbose` for detailed resolver and
-symbol diagnostics.
-
----
-
-### `lunex see_errors`
-
-Show detailed compile errors with full context.
-
-```
-lunex see_errors <file>
-```
-
----
-
-### `lunex dis`
-
-Inspect a compiled `.nax` archive file.
-
-```
-lunex dis <file.nax>
-```
-
-Writes an annotated file alongside the input showing the archive contents.
-
----
-
-### `lunex init`
-
-Create a new Lunex project.
-
-```
-lunex init [name]
-lunex init <template> <name>
-```
-
-Without a template, creates `lunex.toml`, `main.lx`, `src/math.lx` (an
-example local module), and `.gitignore` in a new folder named `name`
-(defaults to the current directory name).
-
-With a template (`http_server`, `database`, or `website`), scaffolds a
-project for that use case instead.
-
----
-
-### `lunex start`
-
-Run the entry point declared in `lunex.toml`.
-
-```
-lunex start
-```
-
-Equivalent to `lunex run <entry>`, where `<entry>` is the `entry` field
-under `[project]` in `lunex.toml` (defaults to `main.lx`).
-
----
-
-### `lunex debug`
-
-Run a file with full compile diagnostics — every compile error, not just
-the first — and, if compilation succeeds, run it with debug mode enabled
-so each execution step and any runtime error prints with a full trace.
-
-```
-lunex debug <file>
-```
-
-Use this when `lunex run` doesn't give you enough detail to find a bug.
-
----
-
-### `lunex bench`
-
-Run a file and print compile time and execution time.
-
-```
-lunex bench <file>
-```
-
----
-
-### Package Management
-
-Package management is built into the `lunex` CLI and implemented in Go,
-backed by `lunex.toml` and `lunex.lock`. See [`../modulesys.md`](../modulesys.md)
-for the full picture.
-
-```bash
-lunex install                              # install everything in lunex.toml (local store)
-lunex install -g <url>[@version]           # install one library globally, no lunex.toml required
-lunex install -l <url>[@version]           # install one library locally for this project only
-lunex add <url>[@version]                  # add a [libraries.*] entry to lunex.toml and install it
-lunex remove <library>                     # remove a library from both stores
-lunex update [library]                     # re-resolve one or all installed libraries
-lunex list                                 # list installed libraries, with scope (local/global)
-```
-
-`<url>` accepts a full `https://github.com/owner/repo` URL or the
-`owner/repo` shorthand; both resolve to a `github`-source library.
-Libraries installed this way are stored one directory per version —
-`<name>@<version>` — under either store, so different projects can depend
-on different versions of the same library without conflict.
-
----
-
-### `lunex env`
-
-Show the module system's current state: global and local store paths and
-how many versions are installed in each, and whether `lunex.toml` /
-`lunex.lock` exist in the current directory.
-
-```
-lunex env
-```
-
----
-
-### `lunex link`
-
-Publish every command listed under `[project.bin]` in `lunex.toml` as a
-global shim, so it can be run from anywhere on the system.
-
-```
-lunex link
-```
-
-Requires `lunex.toml` to exist in the current directory with at least one
-`[project.bin]` entry.
-
----
-
 ### `lunex pack`
 
-Bundle a directory of `.lx` files into a single `.nax` archive.
+Validate Lunex source and emit a `.nax` archive. The command accepts either one `.lx` source file or a project directory. When a directory is supplied, `main.lx` at the project root is the executable entry point and every `.lx` file in the project is checked before the archive is emitted. Local `@fimport` dependencies are resolved and embedded automatically.
 
 ```
-lunex pack <directory> [-o <output.nax>]
+lunex pack <file.lx|directory> [--source] [-o <output.nax>]
 ```
 
----
+For a file, the default output is `<file>.nax`. For a directory, the default output is `<directory>.nax`. A directory pack requires a root `main.lx`.
+
+Examples:
+
+```bash
+lunex pack main.lx
+lunex pack main.lx -o dist/app.nax
+lunex pack ./my-project
+lunex pack ./my-project -o dist/my-project.nax
+```
+
+The complete lexer, parser, AST, resolver, checker, compiler, and local module graph are validated before archive publication. The default archive stores compiled NAX entries containing a binary representation of the validated AST rather than source text or Lunex VM bytecode. When any diagnostic is found, the command exits without creating or replacing the `.nax` artifact.
 
 ### `lunex unpack`
 
@@ -300,8 +154,8 @@ file (e.g. `app.nax` extracts to `./app/`).
 lunex unpack <file.nax>
 ```
 
-There is no `-o` flag — the output directory name is always derived from
-the input file.
+There is no `-o` flag. The output directory name is always derived from
+the input file. Compiled NAX entries recover readable `.lx` files from their stored AST; `--source` entries also preserve the original `.lx` source text.
 
 ---
 
@@ -330,7 +184,7 @@ lunex platform
 
 ### `lunex runtimes`
 
-List available execution engines (interpreter, archive loader).
+List the available Lunex execution engine.
 
 ```
 lunex runtimes
@@ -341,12 +195,12 @@ lunex runtimes
 ## Cache management
 
 ```
-lunex set cache <dir>     # set custom runtime-cache directory
-lunex set cache reset     # restore default runtime-cache directory
-lunex cache               # inspect on-disk runtime cache
-lunex cache clear         # clear on-disk runtime cache
-lunex memcache            # inspect in-process memory cache
-lunex memcache clear      # clear memory cache
+lunex set cache <dir>
+lunex set cache reset
+lunex cache
+lunex cache clear
+lunex memcache
+lunex memcache clear
 ```
 
 This is the runtime/adapter cache (compiled artifacts, embedded runtime
@@ -362,8 +216,15 @@ files), separate from the package module stores shown by `lunex env`.
 | `LUNEX_RT_DIR`             | Override where the embedded runtime is extracted/cached           |
 | `LUNEX_USE_CWD_CACHE`      | Set to `1` to use a cache directory relative to the current working directory instead of the home-based one |
 | `NTL_DEBUG`                | Set automatically by `lunex debug`; set to `1` yourself to get the same verbose diagnostics from any command |
+| `LUNEX_NATIVE`             | Set to `0` to disable the native loop JIT (default: enabled)      |
+| `LUNEX_NATIVE_HOT`         | Loop iterations before native compilation (default: `32`)         |
+| `LUNEX_NATIVE_TRACE`       | Set to `1` to print JIT decisions to stderr                       |
+| `LUNEX_NATIVE_VERIFY`      | Set to `0` to skip the compile-time native self-check (default: enabled) |
 | `GOGC`                     | Go GC percentage (Lunex sets `50` by default if unset)            |
 | `GOMEMLIMIT`               | Go memory limit (Lunex sets `200MiB` by default if unset)         |
+
+There is no environment variable for enabling `std.ffi`. FFI activation is
+handled only by the command-line prefix described above.
 
 ---
 

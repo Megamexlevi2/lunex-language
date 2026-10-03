@@ -5,7 +5,7 @@ import (
 	shared "lunex/internal/std/shared"
 )
 
-func NativeModule() *runtime.Value {
+func NativeModule(interp *runtime.Interpreter) *runtime.Value {
 	return runtime.ObjectVal(map[string]*runtime.Value{
 		"isString": runtime.FuncVal(&runtime.Function{Name: "isString", Native: func(args []*runtime.Value, _ *runtime.Value) (*runtime.Value, error) {
 			return runtime.BoolVal(len(args) > 0 && args[0].Tag == runtime.TypeString), nil
@@ -51,5 +51,6 @@ func NativeModule() *runtime.Value {
 			}
 			return runtime.BoolVal(shared.DeepEqual(args[0], args[1])), nil
 		}}),
+		"ffi": ffiNativeModule(interp),
 	})
 }
