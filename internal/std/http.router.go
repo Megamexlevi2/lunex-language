@@ -189,10 +189,8 @@ fn _splitPath(rawPath) {
         } catch (failure) {
           valid = false
         }
-        if typeof(decoded) == "string" {
+        if decoded != null {
           segments.push(decoded)
-        } else {
-          valid = false
         }
         i = i + 1
       }
@@ -302,8 +300,6 @@ fn _run(settings, handler, req, res) {
 }
 
 fn _dispatch(root, settings, req, res) {
-  val empty = {}
-  req.params = empty
   val segments = _splitPath(req.rawPath)
   if segments == null {
     _reply(res, 400, "Bad Request", "E_ROUTER_BAD_PATH")
@@ -320,6 +316,8 @@ fn _dispatch(root, settings, req, res) {
         _reply(res, 405, "Method Not Allowed", "E_ROUTER_METHOD_NOT_ALLOWED")
       }
     } elif settings.notFound != null {
+      val empty = {}
+      req.params = empty
       _run(settings, settings.notFound, req, res)
     } else {
       _reply(res, 404, "Not Found", "E_ROUTER_NOT_FOUND")
@@ -387,9 +385,6 @@ fn create(routes, options = undefined) {
     val route = routes[i]
     if typeof(route) != "object" || route.kind != "route" {
       _invalid("routes[" + str(i) + "] is not a route definition")
-    }
-    if typeof(route.method) != "string" || typeof(route.path) != "string" || typeof(route.handler) != "function" {
-      _invalid("routes[" + str(i) + "] is malformed")
     }
     _insert(root, _compilePath(route.path), route.method, route.handler, route.path)
     i = i + 1

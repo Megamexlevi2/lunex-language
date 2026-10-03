@@ -38,12 +38,16 @@ foreach(ENTRY ${TARGET_LIST})
     if(T_OS STREQUAL "android")
         set(ANDROID_BUILD_MODE "-buildmode=pie")
     endif()
+    set(GO_BUILD_FLAGS -trimpath -tags netgo,osusergo -ldflags=-s\ -w)
+    if(T_OS STREQUAL "freebsd")
+        list(APPEND GO_BUILD_FLAGS -gcflags=github.com/go-webgpu/goffi/internal/fakecgo=-std)
+    endif()
     message(STATUS "Building ${T_OS}/${T_ARCH}")
 
     execute_process(
         COMMAND ${CMAKE_COMMAND} -E env
             GONOSUMDB=* GOFLAGS=-mod=mod GOOS=${T_OS} GOARCH=${T_ARCH} CGO_ENABLED=0
-            ${GO_EXECUTABLE} build ${ANDROID_BUILD_MODE} -trimpath -tags netgo,osusergo -ldflags=-s\ -w
+            ${GO_EXECUTABLE} build ${ANDROID_BUILD_MODE} ${GO_BUILD_FLAGS}
             -o "${OUT_DIR}/${RELEASE_NAME}" ./cmd/lunex
         WORKING_DIRECTORY ${SRC_DIR}
         RESULT_VARIABLE BUILD_RESULT

@@ -131,7 +131,11 @@ func Run() {
 		meta.PrintVersion()
 
 	case "help", "--help", "-h":
-		printHelp()
+		if len(args) > 1 {
+			printCommandHelp(args[1])
+		} else {
+			printHelp()
+		}
 
 	case "--help-extras":
 		fmt.Println("--jit")
@@ -1616,61 +1620,6 @@ func printEnv() {
 	}
 }
 
-func printHelpCompact() {
-	type entry struct{ cmd, desc string }
-	sections := []struct {
-		title   string
-		entries []entry
-	}{
-		{"Usage", []entry{
-			{"lunex run <file>", "run a .lx source or .nax archive"},
-			{"lunex start", "run the project entry from lunex.toml"},
-			{"lunex debug <file>", "run with full diagnostics + stack trace"},
-			{"lunex -e \"<code>\"", "run a code snippet directly"},
-			{"lunex repl", "start the interactive REPL"},
-			{"lunex check <file>", "check for errors without running"},
-			{"lunex init [name]", "create a new project folder"},
-			{"lunex pack <file.lx|directory>", "validate and bundle source or project directory to .nax"},
-			{"lunex unpack <file.nax>", "recover .lx code from the compiled NAX archive"},
-			{"lunex cache [clear]", "show or clear the on-disk cache"},
-			{"lunex platform", "show platform / adapter diagnostics"},
-			{"lunex bench <file>", "run with timing output"},
-			{"lunex env", "show module store paths and status"},
-			{"lunex version", "print version"},
-			{"lunex help", "show this help"},
-		}},
-		{"Modules", []entry{
-			{"@import(\"std.io\")", "standard library module"},
-			{"lunex ffi = on run app.lx", "enable native FFI for this process"},
-			{"@import(\"pkg-name\")", "installed library"},
-			{"@fimport(\"./f.nax\")", "local .nax archive file"},
-			{"@fimport(\"./f.lx\")", "local .lx source file"},
-		}},
-		{"Dependencies", []entry{
-			{"lunex install", "install all lunex.toml libraries"},
-			{"lunex add <url>[@v]", "add + install a dependency"},
-			{"lunex remove <lib>", "remove an installed library"},
-			{"lunex update [lib]", "re-resolve one or all libraries"},
-			{"lunex list", "list installed libraries"},
-		}},
-	}
-
-	for _, s := range sections {
-		fmt.Printf("%s:\n", s.title)
-		for _, e := range s.entries {
-			fmt.Printf("  %s\n      %s\n", e.cmd, e.desc)
-		}
-		fmt.Println()
-	}
-
-	fmt.Print(`Flags: --debug/-d  --verbose/-V  --no-cache
-
-Run 'lunex help' in a wider terminal for the full reference,
-including the standard library module list.
-
-`)
-}
-
 func consumeFFIOption(args []string) []string {
 	if len(args) == 0 || args[0] != "ffi" {
 		return args
@@ -1694,109 +1643,6 @@ func consumeFFIOption(args []string) []string {
 		os.Exit(0)
 	}
 	return remaining
-}
-
-func printHelp() {
-	fmt.Printf("Lunex %s\n\n", meta.Version())
-
-	if adaptor.TerminalWidth() < 64 {
-		printHelpCompact()
-		return
-	}
-
-	fmt.Print(`Usage:
-  lunex run <file> [--emit ast|ir]   run a .lx source or .nax archive
-  lunex start                        run the project entry from lunex.toml
-  lunex debug <file>                 run with full compile diagnostics and a stack trace on error
-  lunex -e "<code>"                  run a code snippet directly
-  lunex repl                         start the interactive REPL
-  lunex check <file>                 check for errors without running
-  lunex see_errors <file>            show detailed compile errors
-  lunex init [name]                  create a new project folder
-  lunex init <template> <name>       create a project from a template
-                                        (http_server, database, website)
-  lunex pack <file.lx|directory> [--source] validate and bundle source or project directory to an optimized .nax archive
-  lunex unpack <file.nax>            recover .lx code from the compiled NAX archive to a directory
-  lunex set cache <dir>              set the on-disk runtime cache directory
-  lunex set cache reset              reset the cache directory to default
-  lunex cache [clear]                show or clear the on-disk runtime cache
-  lunex memcache [clear]             show or clear the in-process memory cache
-  lunex platform                     show platform / adapter diagnostics
-  lunex runtimes                     show available execution engines
-  lunex bench <file>                 run with timing output
-  lunex env                          show global/local module store paths and project status
-  lunex link                         link this project's [project.bin] commands globally
-  lunex version                      print version
-  lunex help                         show this help
-
-Module system:
-  @import("std.io")                  standard library module (always available)
-  @import("pkg-name")                library installed via lunex install/add
-  @fimport("./mylib.nax")            local .nax archive file
-  @fimport("./src/utils.lx")         local .lx source file
-
-Dependency management (lunex.toml + lunex.lock):
-  lunex install                      install every [libraries.*] entry in lunex.toml
-  lunex install -g <url>[@version]   install a library globally (~/.lunex), no lunex.toml needed
-  lunex install -l <url>[@version]   install a library locally (./.lunex) for this project only
-  lunex add <url>[@version]          add a dependency to lunex.toml and install it
-  lunex remove <library>             remove an installed library
-  lunex update [library]             re-resolve one or all libraries against lunex.toml
-  lunex list                         list installed libraries and their scope (local/global)
-
-  Each installed version is kept isolated on disk, so two projects — or
-  two dependencies of the same project — can each depend on a different
-  version of the same library without conflict. lunex.lock records the
-  exact resolved version, source, and hash for every library so a build
-  stays reproducible.
-
-Executable commands ("bin", like package.json):
-  [project]
-  bin = "./cli.lx"                   single command, named after the project
-
-  [project.bin]                      or multiple named commands
-  build = "./bin/build.lx"
-  serve = "./bin/serve.lx"
-
-  When a library declaring [project.bin] is installed (lunex install -g/-l,
-  or a dependency in lunex.toml), Lunex writes an executable shim per
-  command into ~/.lunex/bin (global) or ./.lunex/bin (local) that runs
-  ` + "`lunex run <entry>`" + `. Add ~/.lunex/bin to PATH to run those commands
-  directly. Use 'lunex link' to expose the project you're developing the
-  same way, without installing it first.
-
-Global flags (place before the command or file):
-  --debug, -d   enable debug mode (shows every execution step on stderr)
-  --verbose, -V enable verbose debug output (implies --debug)
-  --no-cache    compile fresh every run; store nothing to disk or memory
-
-Native FFI (disabled by default; CLI-only):
-  lunex ffi = on run app.lx      enable FFI for this process
-  lunex ffi = off run app.lx     explicitly disable FFI for this process
-  The FFI switch is not read from source code or environment variables.
-
-Environment variables:
-  LUNEX_DEBUG=1   enable debug mode
-  LUNEX_VERBOSE=1 verbose debug output (implies LUNEX_DEBUG=1)
-
-Standard library modules:
-  io         Console I/O: print, log, warn, table, colors
-  fs         File system: read, write, list, stat, copy, glob
-  http       HTTP client and server
-  crypto     Hashing, encryption, JWT, passwords, UUIDs
-  db         SQLite-backed document database (stored in .lunex/data/)
-  ws         WebSocket server and client
-  jwt        JSON Web Token sign and verify
-  json       Parse, stringify, validate, read/write JSON files
-  math       Math functions and constants (PI, E, sqrt, pow, ...)
-  datetime   Date and time utilities
-  os         OS interaction: exec, env, platform, paths
-  regex      Regular expression matching and replacement
-  env        Read and write environment variables
-  ffi        Native shared-library loading, symbol binding, calls, callbacks, and memory access
-  utils      String, array, and object helpers
-
-`)
 }
 
 const (

@@ -179,12 +179,16 @@ build_go_binary() {
 
     local build_tags="netgo,osusergo"
     local build_mode=()
+    local gcflags=()
     if [ "$os" = "android" ]; then
         build_mode+=("-buildmode=pie")
     fi
+    if [ "$os" = "freebsd" ]; then
+        gcflags+=("-gcflags=github.com/go-webgpu/goffi/internal/fakecgo=-std")
+    fi
 
     if ! env GONOSUMDB='*' GOFLAGS='-mod=mod' GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 \
-        go build "${build_mode[@]}" -trimpath -tags "$build_tags" -ldflags="-s -w" -o "$target_bin" ./cmd/lunex >"$log_file" 2>&1; then
+        go build "${build_mode[@]}" "${gcflags[@]}" -trimpath -tags "$build_tags" -ldflags="-s -w" -o "$target_bin" ./cmd/lunex >"$log_file" 2>&1; then
         sed '/^go: downloading/d' "$log_file" >&2
         rm -f "$log_file"
         fail "Build failed"

@@ -115,7 +115,7 @@ install-go:
 build: banner install-go
 	@printf '$(BLUE)==>$(NC) $(BOLD)Building Lunex for $(GOOS)/$(GOARCH)$(NC)\n'
 	@GONOSUMDB='*' GOFLAGS='-mod=mod' GOOS=$(GOOS) GOARCH=$(GOARCH) CGO_ENABLED=0 \
-		go build $(if $(filter android,$(OS)),-buildmode=pie,) -trimpath -tags netgo,osusergo -ldflags="-s -w" -o "$(BIN)" ./cmd/lunex
+		go build $(if $(filter android,$(OS)),-buildmode=pie,) $(if $(filter freebsd,$(OS)),-gcflags=github.com/go-webgpu/goffi/internal/fakecgo=-std,) -trimpath -tags netgo,osusergo -ldflags="-s -w" -o "$(BIN)" ./cmd/lunex
 	@test -f "$(BIN)" || (printf '$(RED)[error]$(NC) Build completed without producing $(BIN)\n' >&2; exit 1)
 	@if [ "$(OS)" = "android" ] && command -v readelf >/dev/null 2>&1; then \
 		interp="$$(readelf -lW "$(BIN)" 2>/dev/null | sed -n 's/.*Requesting program interpreter: \([^]]*\).*/\1/p' | head -n1 | tr -d '\r' | sed 's/[[:space:]]*$$//')"; \
@@ -135,7 +135,7 @@ release: banner install-go
 		name="lunex-$$t_os-$$t_arch$$ext"; \
 		printf '$(CYAN)[info]$(NC) Building '"$$t_os/$$t_arch"'\n'; \
 		GONOSUMDB='*' GOFLAGS='-mod=mod' GOOS=$$t_os GOARCH=$$t_arch CGO_ENABLED=0 \
-			go build $(if $(filter android,$$t_os),-buildmode=pie,) -trimpath -tags netgo,osusergo -ldflags="-s -w" -o "$(RELEASE_DIR)/$$name" ./cmd/lunex || exit 1; \
+			go build $(if $(filter android,$$t_os),-buildmode=pie,) $(if $(filter freebsd,$$t_os),-gcflags=github.com/go-webgpu/goffi/internal/fakecgo=-std,) -trimpath -tags netgo,osusergo -ldflags="-s -w" -o "$(RELEASE_DIR)/$$name" ./cmd/lunex || exit 1; \
 		printf '$(GREEN)[ok]$(NC) Done: $(RELEASE_DIR)/'"$$name ($$(du -sh "$(RELEASE_DIR)/$$name" | cut -f1))"'\n'; \
 	done
 	@printf '$(GREEN)[ok]$(NC) All targets built successfully in ./$(RELEASE_DIR)/\n'

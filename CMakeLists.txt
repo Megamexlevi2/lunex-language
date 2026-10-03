@@ -83,6 +83,10 @@ set(GO_BUILD_MODE "")
 if(LUNEX_TARGET_OS STREQUAL "android")
     set(GO_BUILD_MODE "-buildmode=pie")
 endif()
+set(GO_BUILD_FLAGS -trimpath -tags netgo,osusergo -ldflags=-s\ -w)
+if(LUNEX_TARGET_OS STREQUAL "freebsd")
+    list(APPEND GO_BUILD_FLAGS -gcflags=github.com/go-webgpu/goffi/internal/fakecgo=-std)
+endif()
 
 set(LUNEX_BIN "${CMAKE_SOURCE_DIR}/lunex${BIN_EXT}")
 set(RELEASE_DIR "${CMAKE_SOURCE_DIR}/release")
@@ -134,7 +138,7 @@ add_custom_target(banner
 add_custom_target(build ALL
     COMMAND ${CMAKE_COMMAND} -E env
         GONOSUMDB=* GOFLAGS=-mod=mod GOOS=${GOOS} GOARCH=${GOARCH} CGO_ENABLED=0
-        ${GO_EXECUTABLE} build ${GO_BUILD_MODE} -trimpath -tags netgo,osusergo -ldflags=-s\ -w -o "${LUNEX_BIN}" ./cmd/lunex
+        ${GO_EXECUTABLE} build ${GO_BUILD_MODE} ${GO_BUILD_FLAGS} -o "${LUNEX_BIN}" ./cmd/lunex
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     DEPENDS banner
     COMMENT "Building Lunex for ${GOOS}/${GOARCH}"
