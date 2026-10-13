@@ -23,7 +23,7 @@ func bytecodeStackDepths(p *Program) ([]int, error) {
 		switch in.Op {
 		case OpPushConst, OpLoadSlot, OpDup:
 			d++
-		case OpStoreSlot, OpPop, OpSetRepeatCounter:
+		case OpStoreSlot, OpPop, OpSetRepeatCounter, OpReturnValue:
 			d--
 		case OpStoreSlotKeep, OpSwap, OpNeg, OpJump, OpTick, OpRepeatCheck, OpRepeatDecrement, OpBreak, OpReturn:
 		case OpAdd, OpSub, OpMul, OpDiv, OpMod, OpCompare:
@@ -66,7 +66,7 @@ func bytecodeStackDepths(p *Program) ([]int, error) {
 		}
 
 		switch p.Bytecode[i].Op {
-		case OpReturn:
+		case OpReturn, OpReturnValue:
 			if err := succ(len(p.Bytecode)); err != nil {
 				return nil, err
 			}

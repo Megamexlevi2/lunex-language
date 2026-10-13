@@ -170,6 +170,9 @@ func (w *x86Writer) movqImmMem(base byte, disp int, v uint64) {
 
 func (w *x86Writer) movsdRR(dst, src byte) {
 	w.u8(0xF2)
+	if dst >= 8 || src >= 8 {
+		w.u8(x86Rex(false, dst >= 8, src >= 8))
+	}
 	w.u8(0x0F)
 	w.u8(0x10)
 	w.u8(0xC0 | ((dst & 7) << 3) | (src & 7))
@@ -177,6 +180,9 @@ func (w *x86Writer) movsdRR(dst, src byte) {
 
 func (w *x86Writer) ucomisd(a, b byte) {
 	w.u8(0x66)
+	if a >= 8 || b >= 8 {
+		w.u8(x86Rex(false, a >= 8, b >= 8))
+	}
 	w.u8(0x0F)
 	w.u8(0x2E)
 	w.u8(0xC0 | ((a & 7) << 3) | (b & 7))
@@ -262,6 +268,78 @@ func (w *x86Writer) pushConst(idx int) {
 func (w *x86Writer) finishStackValue() {
 	w.movsdStore(regStack, 0, xmm0)
 	w.addRegImm8(regStack, 8)
+}
+
+func (w *x86Writer) movqRR(dst, src byte) {
+	w.u8(x86Rex(true, src >= 8, dst >= 8))
+	w.u8(0x89)
+	w.u8(0xC0 | ((src & 7) << 3) | (dst & 7))
+}
+
+func (w *x86Writer) cmpRegReg(left, right byte) {
+	w.u8(x86Rex(true, right >= 8, left >= 8))
+	w.u8(0x39)
+	w.u8(0xC0 | ((right & 7) << 3) | (left & 7))
+}
+
+func (w *x86Writer) callCodeStart() {
+	w.u8(0xE8)
+	pos := len(w.b)
+	rel := -int64(pos + 4)
+	w.u32(uint32(int32(rel)))
+}
+
+func (w *x86Writer) callSelf(program *Program, in Instruction, returnLabel int) error {
+	depthOK := (1 << 27) + len(w.b)
+	w.movqLoad(0, regCtx, ctxFrameDepthOff)
+	w.movqLoad(1, regCtx, ctxFrameLimitOff)
+	w.cmpRegReg(0, 1)
+	w.jcc(0x8C, depthOK)
+	w.setStatus(StatusCallDepth, int64(in.ErrorNode))
+	w.jmp(returnLabel)
+	w.mark(depthOK)
+	w.movqLoad(0, regCtx, ctxFrameDepthOff)
+	w.addRegImm8(0, 1)
+	w.movqLoad(1, regCtx, ctxFrameLimitOff)
+	w.movqLoad(2, regCtx, ctxBudgetOff)
+	w.movqLoad(8, regCtx, ctxUsedOff)
+	w.u8(0x41)
+	w.u8(0x52)
+	w.u8(0x41)
+	w.u8(0x53)
+	w.leaRegDisp32(regCtx, regCtx, ctxFrameSize)
+	for i, slot := range program.ParamSlots {
+		w.movsdLoad(xmm0, regStack, (i-in.A)*8)
+		w.movsdStore(regCtx, ctxSlotsOff+slot*8, xmm0)
+	}
+	w.movqStore(regCtx, ctxFrameDepthOff, 0)
+	w.movqStore(regCtx, ctxFrameLimitOff, 1)
+	w.movqStore(regCtx, ctxBudgetOff, 2)
+	w.movqStore(regCtx, ctxUsedOff, 8)
+	w.movqImmMem(regCtx, ctxStatusOff, uint64(StatusOK))
+	w.movqImmMem(regCtx, ctxErrorNodeOff, ^uint64(0))
+	w.callCodeStart()
+	w.movqLoad(0, regCtx, ctxStatusOff)
+	w.movqLoad(1, regCtx, ctxErrorNodeOff)
+	w.movqLoad(2, regCtx, ctxUsedOff)
+	w.movsdLoad(xmm0, regCtx, ctxResultOff)
+	w.subRegImm32(regCtx, int32(ctxFrameSize))
+	w.movqStore(regCtx, ctxStatusOff, 0)
+	w.movqStore(regCtx, ctxErrorNodeOff, 1)
+	w.movqStore(regCtx, ctxUsedOff, 2)
+	w.u8(0x41)
+	w.u8(0x5B)
+	w.u8(0x41)
+	w.u8(0x5A)
+	w.movqLoad(0, regCtx, ctxStatusOff)
+	w.u8(0x48)
+	w.u8(0x85)
+	w.u8(0xC0)
+	w.jcc(0x85, returnLabel)
+	w.subRegImm32(regStack, int32(in.A*8))
+	w.movsdStore(regStack, 0, xmm0)
+	w.addRegImm8(regStack, 8)
+	return nil
 }
 
 func emitMachineLegacy(p *Program) ([]byte, error) {
@@ -532,6 +610,20 @@ func emitMachineLegacy(p *Program) ([]byte, error) {
 			w.movqImmMem(regCtx, ctxStatusOff, uint64(StatusBreak))
 			w.movqImmMem(regCtx, ctxErrorNodeOff, uint64(in.ErrorNode))
 			w.jmp(in.Target)
+		case OpCallSelf:
+			if !p.FunctionMode {
+				return fail(i, fmt.Errorf("self-call opcode outside function"))
+			}
+			if err := w.callSelf(p, in, returnLabel); err != nil {
+				return fail(i, err)
+			}
+		case OpReturnValue:
+			if !p.FunctionMode {
+				return fail(i, fmt.Errorf("value-return opcode outside function"))
+			}
+			w.movsdLoad(xmm0, regStack, -8)
+			w.movsdStore(regCtx, ctxResultOff, xmm0)
+			w.jmp(returnLabel)
 		case OpReturn:
 			w.jmp(returnLabel)
 		default:

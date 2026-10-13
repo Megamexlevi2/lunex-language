@@ -1,6 +1,6 @@
 # Lunex Test Suite
 
-129 tests covering the major language and standard library features.
+141 categorized tests covering the major language and standard library features.
 
 ## Running all tests
 
@@ -20,8 +20,8 @@ lunex run tests/variables/01_val_basic.lx
 
 | Category | Tests | What is covered |
 |---|---|---|
-| `variables/` | 10 | `val`, `var`, strings, numbers, booleans, null, arrays, objects, destructuring |
-| `functions/` | 10 | Basic functions, closures, higher-order, recursion, first-class, memoize, implicit/explicit return |
+| `variables/` | 11 | `val`, `var`, strings, numbers, booleans, null, arrays, objects, destructuring |
+| `functions/` | 10 | Basic functions, closures, higher-order, recursion, first-class, memoize, implicit function results |
 | `control_flow/` | 10 | `if`/`else`, nested conditions, `guard`, `unless`, `match` literals, `match` ranges, `match` as expression, `defer`, short-circuit |
 | `loops/` | 10 | `while`, `break`, `continue`, `each` over arrays/strings/objects, nested loops |
 | `structs/` | 8 | Fields, methods, `this`, factory functions, composition, event emitter, linked list, state machine, builder |
@@ -34,15 +34,16 @@ lunex run tests/variables/01_val_basic.lx
 | `stdlib/fs/` | 5 | Write/read, exists, append, readLines, stat |
 | `stdlib/os/` | 5 | Platform, env vars, exec, args, cwd |
 | `stdlib/regex/` | 5 | `match`, `findAll`, `replace`, `split`, capture groups |
+| `stdlib/db/` | 5 | SQLite-backed database operations |
 | `stdlib/testing/` | 2 | Test registration, groups, lifecycle hooks, parameterized cases, assertions, retries, tags, snapshots, and summaries |
-| `stdlib/ffi/` | 8 | FFI permission state, native library loading, symbol binding, calls, pointers, memory, strings, callbacks, descriptors, and ABI metadata |
+| `stdlib/ffi/` | 9 | FFI permission state, native library loading, symbol binding, calls, pointers, memory, strings, callbacks, descriptors, and ABI metadata |
 | `stdlib/ints/` | 4 | Integer and bitwise operations |
 | `stdlib/buffer/` | 4 | Buffer creation, conversion, slicing, and operations |
 | `stdlib/http/` | 7 | Server basics, router matching, limits and timeouts, static files, URL and cookie helpers |
 | `concurrency/` | 5 | Basic channel, fan-out, pipeline, worker pool, collect |
-| `advanced/` | 9 | Closures, data pipeline, observer, retry/backoff, lazy eval, middleware, event loop, runtime introspection, comprehensive |
+| `advanced/` | 10 | Closures, data pipeline, observer, retry/backoff, lazy eval, middleware, event loop, runtime introspection, comprehensive |
 
-**Total: 138 tests**
+**Total: 141 categorized tests**
 
 ## Test file naming
 

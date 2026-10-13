@@ -51,7 +51,7 @@ func isHardReservedKeyword(name string) bool {
 		"delete", "use", "struct", "defer", "guard", "loop",
 		"repeat", "when", "nax", "lunex", "sleep", "range",
 		"ifhave", "ifset", "between", "matches", "startsWith",
-		"endsWith", "unless":
+		"endsWith", "unless", "watch":
 		return true
 	}
 	return false
@@ -340,6 +340,8 @@ func (p *Parser) parseStmt() (*ast.Node, error) {
 			return p.parseUnless()
 		case "while":
 			return p.parseWhile()
+		case "watch":
+			return p.parseWatch()
 		case "for":
 			return p.parseFor()
 		case "each":
@@ -1112,6 +1114,22 @@ func (p *Parser) parseWhile() (*ast.Node, error) {
 		return nil, err
 	}
 	return &ast.Node{Type: ast.WhileStmt, Test: test, Body: body, Line: t.Line, Col: t.Col}, nil
+}
+
+func (p *Parser) parseWatch() (*ast.Node, error) {
+	t := p.advance()
+	target, err := p.parsePostfix()
+	if err != nil {
+		return nil, err
+	}
+	if target.Type != ast.Identifier && target.Type != ast.MemberExpr {
+		return nil, p.errorf(t, "watch target must be a variable or member expression")
+	}
+	body, err := p.parseBlock()
+	if err != nil {
+		return nil, err
+	}
+	return &ast.Node{Type: ast.WatchStmt, Subject: target, Body: body, Line: t.Line, Col: t.Col}, nil
 }
 
 func (p *Parser) parseFor() (*ast.Node, error) {

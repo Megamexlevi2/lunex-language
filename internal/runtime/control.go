@@ -78,9 +78,9 @@ func (interp *Interpreter) execForOf(node *ast.Node, env *Environment) (*Value, 
 	}
 	idx := 0
 	iterLoop := func(val *Value) error {
-		iterEnv := NewResolvedEnvironment(env, resolver.SlotCount(node.ScopeInfo))
+		iterEnv := NewResolvedEnvironment(env, resolver.SlotCount(node.ScopeInfo), resolver.SlotNames(node.ScopeInfo))
 		if node.Destructure != nil {
-			if err := interp.bindDestructure(node.Destructure, val, iterEnv); err != nil {
+			if err := interp.bindDestructure(node.Destructure, val, iterEnv, node.IsConst); err != nil {
 				return err
 			}
 		} else {
@@ -146,7 +146,7 @@ func (interp *Interpreter) execFor(node *ast.Node, env *Environment) (*Value, er
 		return Undefined, nil
 	}
 
-	forEnv := NewResolvedEnvironment(env, resolver.SlotCount(node.ScopeInfo))
+	forEnv := NewResolvedEnvironment(env, resolver.SlotCount(node.ScopeInfo), resolver.SlotNames(node.ScopeInfo))
 
 	if node.Init != nil {
 		if _, err := interp.execNode(node.Init, forEnv); err != nil {
@@ -273,7 +273,7 @@ func (interp *Interpreter) execTry(node *ast.Node, env *Environment) (*Value, er
 	if err != nil {
 		if te, ok := err.(*throwError); ok {
 			if node.CatchBlock != nil {
-				catchEnv := NewResolvedEnvironment(env, resolver.SlotCount(node.CatchBlock.ScopeInfo))
+				catchEnv := NewResolvedEnvironment(env, resolver.SlotCount(node.CatchBlock.ScopeInfo), resolver.SlotNames(node.CatchBlock.ScopeInfo))
 				if node.CatchParam != "" {
 					catchEnv.DefineSlot(0, resolver.SlotIndex(node.CatchBlock.ScopeInfo, node.CatchParam), node.CatchParam, te.val, false)
 				}
@@ -296,7 +296,7 @@ func (interp *Interpreter) execTry(node *ast.Node, env *Environment) (*Value, er
 			return nil, re
 		} else {
 			if node.CatchBlock != nil {
-				catchEnv := NewResolvedEnvironment(env, resolver.SlotCount(node.CatchBlock.ScopeInfo))
+				catchEnv := NewResolvedEnvironment(env, resolver.SlotCount(node.CatchBlock.ScopeInfo), resolver.SlotNames(node.CatchBlock.ScopeInfo))
 				if node.CatchParam != "" {
 					errMsg := err.Error()
 					errObj := ObjectVal(map[string]*Value{
@@ -372,7 +372,7 @@ func (interp *Interpreter) execHave(node *ast.Node, env *Environment) (*Value, e
 		}
 		return Undefined, nil
 	}
-	haveEnv := NewResolvedEnvironment(env, resolver.SlotCount(node.ScopeInfo))
+	haveEnv := NewResolvedEnvironment(env, resolver.SlotCount(node.ScopeInfo), resolver.SlotNames(node.ScopeInfo))
 	if node.Alias != "" {
 		haveEnv.DefineSlot(0, resolver.SlotIndex(node.ScopeInfo, node.Alias), node.Alias, val, false)
 	}
@@ -394,7 +394,7 @@ func (interp *Interpreter) execIfHave(node *ast.Node, env *Environment) (*Value,
 		return nil, err
 	}
 	cond := interp.testHaveCondition(val, node, env)
-	ifEnv := NewResolvedEnvironment(env, resolver.SlotCount(node.ScopeInfo))
+	ifEnv := NewResolvedEnvironment(env, resolver.SlotCount(node.ScopeInfo), resolver.SlotNames(node.ScopeInfo))
 	if node.Alias != "" {
 		ifEnv.DefineSlot(0, resolver.SlotIndex(node.ScopeInfo, node.Alias), node.Alias, val, false)
 	}

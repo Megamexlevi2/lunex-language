@@ -44,6 +44,7 @@ const (
 	IfHaveStmt    NodeType = "IfHaveStmt"
 	IfSetStmt     NodeType = "IfSetStmt"
 	DeleteStmt    NodeType = "DeleteStmt"
+	WatchStmt     NodeType = "WatchStmt"
 	Identifier    NodeType = "Identifier"
 	NumberLit     NodeType = "NumberLit"
 	StringLit     NodeType = "StringLit"

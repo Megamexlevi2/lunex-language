@@ -11,19 +11,32 @@ const (
 	t2Tmp0Xmm   = 6
 	t2Tmp1Xmm   = 6
 	t2Tmp2Xmm   = 6
-	t2MaxStack  = 6
+	t2MaxStack  = 14
 )
 
 func (w *x86Writer) xorpdXmm(dst, src byte) {
 	w.u8(0x66)
+	if dst >= 8 || src >= 8 {
+		w.u8(x86Rex(false, dst >= 8, src >= 8))
+	}
 	w.u8(0x0F)
 	w.u8(0x57)
 	w.u8(0xC0 | ((dst & 7) << 3) | (src & 7))
 }
 
+func (w *x86Writer) sseBinary(prefix, opcode, dst, src byte) {
+	w.u8(prefix)
+	if dst >= 8 || src >= 8 {
+		w.u8(x86Rex(false, dst >= 8, src >= 8))
+	}
+	w.u8(0x0F)
+	w.u8(opcode)
+	w.u8(0xC0 | ((dst & 7) << 3) | (src & 7))
+}
+
 func (w *x86Writer) cvttsd2si64(dst byte, src byte) {
 	w.u8(0xF2)
-	w.u8(x86Rex(true, dst >= 8, false))
+	w.u8(x86Rex(true, dst >= 8, src >= 8))
 	w.u8(0x0F)
 	w.u8(0x2C)
 	w.u8(0xC0 | ((dst & 7) << 3) | (src & 7))
@@ -43,6 +56,11 @@ func (w *x86Writer) syncTier2Counters() {
 }
 
 func emitMachineTier2(p *Program) ([]byte, error) {
+	for _, in := range p.Bytecode {
+		if in.Op == OpCallSelf {
+			return emitMachineLegacy(p)
+		}
+	}
 	depths, err := bytecodeStackDepths(p)
 	if err != nil {
 		return nil, err
@@ -87,7 +105,12 @@ func emitMachineTier2(p *Program) ([]byte, error) {
 			w.mark(label)
 		}
 		d := depths[i]
-		x := func(index int) byte { return byte(index) }
+		x := func(index int) byte {
+			if index >= 6 {
+				index += 2
+			}
+			return byte(index)
+		}
 		if d > t2MaxStack {
 			return emitMachineLegacy(p)
 		}
@@ -115,10 +138,7 @@ func emitMachineTier2(p *Program) ([]byte, error) {
 			if in.Op == OpMul {
 				op = 0x59
 			}
-			w.u8(0xF2)
-			w.u8(0x0F)
-			w.u8(op)
-			w.u8(0xC0 | ((x(d-2) & 7) << 3) | (x(d-1) & 7))
+			w.sseBinary(0xF2, op, x(d-2), x(d-1))
 		case OpDiv:
 			safe := newLocal()
 			errLabel := newLocal()
@@ -128,10 +148,7 @@ func emitMachineTier2(p *Program) ([]byte, error) {
 			w.jcc(0x8A, safe)
 			w.jcc(0x84, errLabel)
 			w.mark(safe)
-			w.u8(0xF2)
-			w.u8(0x0F)
-			w.u8(0x5E)
-			w.u8(0xC0 | ((x(d-2) & 7) << 3) | (x(d-1) & 7))
+			w.sseBinary(0xF2, 0x5E, x(d-2), x(d-1))
 			w.jmp(done)
 			w.mark(errLabel)
 			w.syncTier2Counters()
@@ -148,10 +165,7 @@ func emitMachineTier2(p *Program) ([]byte, error) {
 			w.jcc(0x84, errLabel)
 			w.ucomisd(x(d-2), t2ZeroXmm)
 			w.jcc(0x8A, deopt)
-			w.u8(0xF2)
-			w.u8(0x0F)
-			w.u8(0x5E)
-			w.u8(0xC0 | ((x(d-2) & 7) << 3) | (x(d-1) & 7))
+			w.sseBinary(0xF2, 0x5E, x(d-2), x(d-1))
 			w.movsdLoad(t2ZeroXmm, regCtx, ctxConstsOff+8)
 			w.ucomisd(x(d-2), t2ZeroXmm)
 			w.jcc(0x8A, deopt)
@@ -162,14 +176,8 @@ func emitMachineTier2(p *Program) ([]byte, error) {
 			w.jcc(0x82, deopt)
 			w.cvttsd2si64(0, x(d-2))
 			w.cvtsi2sd64(t2Tmp0Xmm, 0)
-			w.u8(0xF2)
-			w.u8(0x0F)
-			w.u8(0x59)
-			w.u8(0xC0 | ((t2Tmp0Xmm & 7) << 3) | (x(d-1) & 7))
-			w.u8(0xF2)
-			w.u8(0x0F)
-			w.u8(0x5C)
-			w.u8(0xC0 | ((x(d-2) & 7) << 3) | (t2Tmp0Xmm & 7))
+			w.sseBinary(0xF2, 0x59, t2Tmp0Xmm, x(d-1))
+			w.sseBinary(0xF2, 0x5C, x(d-2), t2Tmp0Xmm)
 			w.jmp(done)
 			w.mark(errLabel)
 			w.syncTier2Counters()
@@ -282,6 +290,12 @@ func emitMachineTier2(p *Program) ([]byte, error) {
 			w.syncTier2Counters()
 			w.setStatus(StatusBreak, int64(in.ErrorNode))
 			w.jmp(in.Target)
+		case OpReturnValue:
+			if !p.FunctionMode {
+				return fail(i, fmt.Errorf("value-return opcode outside function"))
+			}
+			w.movsdStore(regCtx, ctxResultOff, x(d-1))
+			w.jmp(returnLabel)
 		case OpReturn:
 			w.jmp(returnLabel)
 		default:

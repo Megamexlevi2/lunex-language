@@ -129,7 +129,7 @@ lunex -e 'val io = @import("std.io"); fn main() { io.log("hello") }'
 Validate Lunex source and emit a `.nax` archive. The command accepts either one `.lx` source file or a project directory. When a directory is supplied, `main.lx` at the project root is the executable entry point and every `.lx` file in the project is checked before the archive is emitted. Local `@fimport` dependencies are resolved and embedded automatically.
 
 ```
-lunex pack <file.lx|directory> [--source] [-o <output.nax>]
+lunex pack <file.lx|directory> [--no-source] [-o <output.nax>]
 ```
 
 For a file, the default output is `<file>.nax`. For a directory, the default output is `<directory>.nax`. A directory pack requires a root `main.lx`.
@@ -143,7 +143,7 @@ lunex pack ./my-project
 lunex pack ./my-project -o dist/my-project.nax
 ```
 
-The complete lexer, parser, AST, resolver, checker, compiler, and local module graph are validated before archive publication. The default archive stores compiled NAX entries containing a binary representation of the validated AST rather than source text or Lunex VM bytecode. When any diagnostic is found, the command exits without creating or replacing the `.nax` artifact.
+The complete lexer, parser, AST, resolver, checker, compiler, and local module graph are validated before archive publication. The archive stores compiled NAX entries containing a binary representation of the validated AST rather than Lunex VM bytecode. Original source text is included by default, so `lunex unpack` can restore the original files without reconstructing or rewriting their syntax. When any diagnostic is found, the command exits without creating or replacing the `.nax` artifact. Use `--no-source` only when exact source recovery is not required. The legacy `--source` flag remains accepted.
 
 ### `lunex unpack`
 
@@ -155,7 +155,7 @@ lunex unpack <file.nax>
 ```
 
 There is no `-o` flag. The output directory name is always derived from
-the input file. Compiled NAX entries recover readable `.lx` files from their stored AST; `--source` entries also preserve the original `.lx` source text.
+the input file. Unpack refuses to write into an existing path, protecting existing project files from accidental overwrites. By default, compiled NAX entries preserve the original `.lx` source text for exact recovery. With `--no-source`, `lunex unpack` reconstructs canonical source from the stored AST, which may not retain original formatting or comments.
 
 ---
 

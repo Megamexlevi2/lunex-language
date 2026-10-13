@@ -1,0 +1,16 @@
+val io = @import("std.io")
+
+fn main() {
+  val user = { name: "Ada", role: "admin", active: true }
+  val { name: displayName, missing = "fallback", ...extra } = user
+  val [first, , third, ...tail] = [1, 2, 3, 4, 5]
+
+  if displayName != "Ada" { throw "alias binding failed" }
+  if missing != "fallback" { throw "object default failed" }
+  if extra.active != true { throw "object rest failed" }
+  if first != 1 { throw "first array binding failed" }
+  if third != 3 { throw "array hole failed" }
+  if tail.length != 2 { throw "array rest failed" }
+
+  io.log("PASS destructuring_advanced")
+}

@@ -73,7 +73,7 @@ func RecoverNAXEntry(entry NAXEntry) (string, error) {
 		}
 		return "", fmt.Errorf("entry %q does not contain recoverable Lunex code", entry.Name)
 	}
-	if entry.SourceText != "" {
+	if entry.Kind == NAXEntryCompiledSource {
 		return entry.SourceText, nil
 	}
 	chunk, err := DecodeNAXEntry(entry)

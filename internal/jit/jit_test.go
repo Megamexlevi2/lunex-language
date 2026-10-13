@@ -1,6 +1,7 @@
 package jit
 
 import (
+	"bytes"
 	"lunex/internal/ast"
 	"math"
 	goruntime "runtime"
@@ -617,4 +618,227 @@ func TestFastPathMatchesReference(t *testing.T) {
 		}
 	}
 	_ = p.Close()
+}
+
+func returnStmt(value *ast.Node) *ast.Node {
+	return &ast.Node{Type: ast.ReturnStmt, Value: value}
+}
+
+func selfCall(name string, args ...*ast.Node) *ast.Node {
+	return &ast.Node{Type: ast.CallExpr, Callee: &ast.Node{Type: ast.Identifier, Name: name}, Args: args}
+}
+
+func recursiveFibBody() *ast.Node {
+	base := block(expr(ident(0, "n")))
+	recurse := block(expr(binary("+",
+		selfCall("fib", binary("-", ident(0, "n"), number("1"))),
+		selfCall("fib", binary("-", ident(0, "n"), number("2"))),
+	)))
+	conditional := &ast.Node{Type: ast.IfStmt, Test: binary("<", ident(0, "n"), number("2")), Consequent: base, Alternate: recurse}
+	return block(conditional)
+}
+
+func runFunctionFrames(t *testing.T, p *Program, n float64, limit int) *Context {
+	t.Helper()
+	frames := make([]Context, limit+1)
+	for i := range frames {
+		for j, value := range p.Constants {
+			frames[i].Consts[j] = value
+		}
+		frames[i].Budget = -1
+		frames[i].ErrorNode = -1
+		frames[i].FrameDepth = 0
+		frames[i].FrameLimit = int64(limit)
+	}
+	frames[0].Slots[p.ParamSlots[0]] = n
+	if err := p.Run(&frames[0]); err != nil {
+		t.Fatal(err)
+	}
+	return &frames[0]
+}
+
+func TestNativeRecursiveFunctionTiers(t *testing.T) {
+	if !Available() {
+		t.Skip("native code generation is unavailable on this architecture")
+	}
+	for _, tier := range []int{1, 2} {
+		p, err := CompileFunction(recursiveFibBody(), "fib", []int{0}, tier)
+		if err != nil {
+			t.Fatalf("tier %d compile: %v", tier, err)
+		}
+		if !p.FunctionMode || !p.Recursive {
+			t.Fatalf("tier %d did not compile a recursive native function", tier)
+		}
+		for n, want := range map[int]float64{0: 0, 1: 1, 2: 1, 3: 2, 10: 55, 20: 6765} {
+			ctx := runFunctionFrames(t, p, float64(n), 1000)
+			if ctx.Status != StatusOK || ctx.Result != want {
+				t.Fatalf("tier %d fib(%d) = %v (status %d), want %v", tier, n, ctx.Result, ctx.Status, want)
+			}
+		}
+		if err := p.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestNativeRecursiveFunctionDepthGuard(t *testing.T) {
+	if !Available() {
+		t.Skip("native code generation is unavailable on this architecture")
+	}
+	p, err := CompileFunction(recursiveFibBody(), "fib", []int{0}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	ctx := runFunctionFrames(t, p, 10, 3)
+	if ctx.Status != StatusCallDepth {
+		t.Fatalf("got status %d, want recursive depth guard", ctx.Status)
+	}
+}
+
+func TestNativeFunctionRejectsNonSelfCalls(t *testing.T) {
+	body := block(returnStmt(selfCall("helper", ident(0, "n"))))
+	if _, err := CompileFunction(body, "fib", []int{0}, 1); err == nil {
+		t.Fatal("expected a non-self call to be rejected")
+	}
+}
+
+func TestNativeContextFrameLayout(t *testing.T) {
+	if ctxResultOff != 7464 || ctxFrameDepthOff != 7472 || ctxFrameLimitOff != 7480 || ctxFrameSize != 7488 {
+		t.Fatalf("unexpected Context layout: result=%d depth=%d limit=%d size=%d", ctxResultOff, ctxFrameDepthOff, ctxFrameLimitOff, ctxFrameSize)
+	}
+}
+
+func TestNativeTier2NonRecursiveFunction(t *testing.T) {
+	if !Available() {
+		t.Skip("native code generation is unavailable on this architecture")
+	}
+	body := block(expr(binary("+", binary("*", ident(0, "n"), number("3")), number("1"))))
+	tier1, err := CompileFunction(body, "scale", []int{0}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tier1.Close()
+	tier2, err := CompileFunction(body, "scale", []int{0}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tier2.Close()
+	if bytes.Equal(tier1.Code, tier2.Code) {
+		t.Fatal("tier 2 did not generate a distinct optimized code sequence")
+	}
+	ctx := tier2.NewContext()
+	ctx.Budget = -1
+	ctx.Slots[tier2.ParamSlots[0]] = 7
+	if err := tier2.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if ctx.Status != StatusOK || ctx.Result != 22 {
+		t.Fatalf("got result %v with status %d, want 22", ctx.Result, ctx.Status)
+	}
+}
+
+func TestTier2OptimizerFoldsNativeBytecode(t *testing.T) {
+	if !Available() {
+		t.Skip("native code generation is unavailable on this architecture")
+	}
+	p := &Program{
+		Tier:         2,
+		FunctionMode: true,
+		Constants:    []float64{0, 2, 3},
+		Bytecode: []Instruction{
+			{Op: OpPushConst, A: 1},
+			{Op: OpPushConst, A: 2},
+			{Op: OpAdd},
+			{Op: OpReturnValue},
+		},
+		Labels: map[int]int{},
+	}
+	optimizeBytecode(p)
+	if len(p.Bytecode) != 2 || p.Bytecode[0].Op != OpPushConst || p.Bytecode[1].Op != OpReturnValue {
+		t.Fatalf("optimizer did not fold constant expression: %#v", p.Bytecode)
+	}
+	code, err := emitMachine(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Code = code
+	defer p.Close()
+	ctx := p.NewContext()
+	ctx.Budget = -1
+	if err := p.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if ctx.Status != StatusOK || ctx.Result != 5 {
+		t.Fatalf("got %v with status %d, want 5", ctx.Result, ctx.Status)
+	}
+}
+
+func TestTier2OptimizerRemapsBranchTargets(t *testing.T) {
+	if !Available() {
+		t.Skip("native code generation is unavailable on this architecture")
+	}
+	p := &Program{
+		Tier:         2,
+		FunctionMode: true,
+		Constants:    []float64{0, math.NaN(), 7, 9},
+		Bytecode: []Instruction{
+			{Op: OpPushConst, A: 1},
+			{Op: OpBranchFalse, Target: 1},
+			{Op: OpPushConst, A: 2},
+			{Op: OpJump, Target: 2},
+			{Op: OpPushConst, A: 3},
+			{Op: OpReturnValue},
+		},
+		Labels: map[int]int{1: 4, 2: 5},
+	}
+	optimizeBytecode(p)
+	code, err := emitMachine(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Code = code
+	defer p.Close()
+	ctx := p.NewContext()
+	ctx.Budget = -1
+	if err := p.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if ctx.Status != StatusOK || ctx.Result != 9 {
+		t.Fatalf("got %v with status %d, want 9", ctx.Result, ctx.Status)
+	}
+}
+
+func TestTier2SupportsDeeperRegisterStack(t *testing.T) {
+	if !Available() {
+		t.Skip("native code generation is unavailable on this architecture")
+	}
+	count := 10
+	if goruntime.GOARCH == "arm64" {
+		count = 20
+	}
+	params := make([]int, count)
+	var value *ast.Node = ident(count-1, "p")
+	for i := count - 2; i >= 0; i-- {
+		params[i] = i
+		value = binary("+", ident(i, "p"), value)
+	}
+	params[count-1] = count - 1
+	p, err := CompileFunction(block(expr(value)), "sum", params, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	ctx := p.NewContext()
+	ctx.Budget = -1
+	want := float64(count * (count + 1) / 2)
+	for i, slot := range p.ParamSlots {
+		ctx.Slots[slot] = float64(i + 1)
+	}
+	if err := p.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if ctx.Status != StatusOK || ctx.Result != want {
+		t.Fatalf("got %v with status %d, want %v", ctx.Result, ctx.Status, want)
+	}
 }

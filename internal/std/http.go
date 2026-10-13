@@ -123,10 +123,10 @@ type httpHost interface {
 }
 
 type httpRuntime struct {
-	host     httpHost
-	throwFn  *runtime.Value
-	invoke2  *runtime.Value
-	invoke3  *runtime.Value
+	host    httpHost
+	throwFn *runtime.Value
+	invoke2 *runtime.Value
+	invoke3 *runtime.Value
 }
 
 func httpRuntimeFor(host httpHost) *httpRuntime {
@@ -1083,6 +1083,9 @@ func (rt *httpRuntime) serverObject(st *httpServerState) *runtime.Value {
 	m["host"] = runtime.StringVal("")
 
 	m["listen"] = httpFn("listen", func(a []*runtime.Value) (*runtime.Value, error) {
+		if isWasmRuntime() {
+			return runtime.Undefined, rt.fail(httpErrListen, "server.listen does not exist")
+		}
 		pv := httpArg(a, 0)
 		if pv.Tag != runtime.TypeNumber || pv.NumVal != math.Trunc(pv.NumVal) || pv.NumVal < 0 || pv.NumVal > 65535 {
 			return runtime.Undefined, rt.fail(httpErrArgument, "server.listen: port must be an integer between 0 and 65535")

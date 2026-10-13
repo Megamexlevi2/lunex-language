@@ -209,6 +209,10 @@ func LoadNAXAsModule(filePath string, c *compiler.Compiler) (*runtime.Value, err
 	if err != nil {
 		return nil, fmt.Errorf("cannot read %s: %w", filePath, err)
 	}
+	return LoadNAXAsModuleData(data, filePath, c)
+}
+
+func LoadNAXAsModuleData(data []byte, filePath string, c *compiler.Compiler) (*runtime.Value, error) {
 	arch, err := decodeNAX(data)
 	if err != nil {
 		return nil, fmt.Errorf("cannot decode archive %s: %w", filePath, err)
@@ -275,7 +279,7 @@ func newFastRuntimeCompiler(ntlLoader func(string) (string, bool), pkgLoader fun
 
 func newRuntimeCompiler(ntlLoader func(string) (string, bool), pkgLoader func(string) (string, bool)) *compiler.Compiler {
 	c := compiler.New(compiler.DefaultOptions)
-	std.RegisterAll(c)
+	std.RegisterLazy(c)
 	if ntlLoader != nil {
 		c.Interpreter().SetNTLLoader(ntlLoader)
 	}

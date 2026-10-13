@@ -108,7 +108,7 @@ var builtinNames = map[string]bool{
 var stdModules = map[string]bool{
 	"io": true, "fs": true, "http": true, "crypto": true, "db": true, "env": true, "testing": true, "ws": true,
 	"utils": true, "json": true, "jwt": true, "math": true, "datetime": true, "os": true, "regex": true,
-	"buffer": true, "ints": true, "runtime": true, "ffi": true, "internal.native": true,
+	"buffer": true, "ints": true, "image": true, "runtime": true, "ffi": true, "internal.native": true,
 	"http/router": true, "http/static": true,
 }
 
@@ -468,6 +468,9 @@ func (c *Checker) checkNode(n *ast.Node, st *state) {
 		c.checkNode(n.Subject, st)
 		c.checkNode(n.Consequent, st)
 		c.checkNode(n.Alternate, st)
+	case ast.WatchStmt:
+		c.checkNode(n.Subject, st)
+		c.checkNode(n.Body, st)
 	case ast.WhileStmt, ast.ForStmt, ast.ForOfStmt, ast.EachInStmt, ast.RepeatStmt, ast.LoopStmt:
 		c.checkNode(n.Test, st)
 		c.checkNode(n.Init, st)

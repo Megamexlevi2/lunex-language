@@ -97,7 +97,7 @@ func (interp *Interpreter) execRangeLoop(node *ast.Node, env *Environment) (*Val
 				jitDisabled = true
 			}
 		}
-		iterEnv := NewResolvedEnvironment(env, resolver.SlotCount(node.ScopeInfo))
+		iterEnv := NewResolvedEnvironment(env, resolver.SlotCount(node.ScopeInfo), resolver.SlotNames(node.ScopeInfo))
 		iterEnv.DefineSlot(0, valueSlot, node.Name, NumberVal(rangeElement(start, step, k)), node.IsConst)
 		if node.Alias != "" {
 			iterEnv.DefineSlot(0, aliasSlot, node.Alias, NumberVal(float64(k)), node.IsConst)

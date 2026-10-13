@@ -361,7 +361,7 @@ fn mul(a, b) {
 
 	case "pack":
 		if len(args) < 2 {
-			fmt.Fprintln(os.Stderr, "usage: lunex pack <file.lx|directory> [--source] [-o output.nax]")
+			fmt.Fprintln(os.Stderr, "usage: lunex pack <file.lx|directory> [--no-source] [-o output.nax]")
 			os.Exit(1)
 		}
 		parsePackCommand(args[1:])
@@ -439,7 +439,7 @@ fn mul(a, b) {
 
 func newCompiler() *compiler.Compiler {
 	c := compiler.New(compiler.DefaultOptions)
-	std.RegisterAll(c)
+	std.RegisterLazy(c)
 	c.Interpreter().SetNTLFileLoader(pkgFileLoader)
 	return c
 }
@@ -773,7 +773,6 @@ func packSourceFile(absInput, inputFile, outputFile string, includeSource bool) 
 		return newPackInternalError(absInput, fmt.Sprintf("archive was emitted but could not be stat'ed: %v", err))
 	}
 	fmt.Printf("%s → %s (%s)\n", inputFile, outputFile, formatBytes(fi.Size()))
-	fmt.Println("help: You can also use the --source flag to facilitate future code retrieval using NAX.")
 	return nil
 }
 
@@ -837,12 +836,7 @@ func packSourceDirectory(absDir, inputPath, outputFile string, includeSource boo
 		}
 	}
 
-	var packErr error
-	if includeSource {
-		packErr = bytecode.PackDirectorySource(absDir, outputFile)
-	} else {
-		packErr = bytecode.PackDirectory(absDir, outputFile)
-	}
+	packErr := bytecode.PackDirectoryMode(absDir, outputFile, includeSource)
 	if packErr != nil {
 		return newPackInternalError(absDir, packErr.Error())
 	}
@@ -852,22 +846,23 @@ func packSourceDirectory(absDir, inputPath, outputFile string, includeSource boo
 		return newPackInternalError(absDir, fmt.Sprintf("directory archive was emitted but could not be stat'ed: %v", err))
 	}
 	fmt.Printf("%s → %s (%s, directory bundle)\n", inputPath, outputFile, formatBytes(fi.Size()))
-	fmt.Println("help: You can also use the --source flag to facilitate future code retrieval using NAX.")
 	return nil
 }
 
 func parsePackCommand(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: lunex pack <file.lx|directory> [--source] [-o output.nax]")
+		fmt.Fprintln(os.Stderr, "usage: lunex pack <file.lx|directory> [--no-source] [-o output.nax]")
 		os.Exit(1)
 	}
 	inputPath := args[0]
 	outputFile := ""
-	includeSource := false
+	includeSource := true
 	for i := 1; i < len(args); i++ {
 		switch args[i] {
 		case "--source":
 			includeSource = true
+		case "--no-source":
+			includeSource = false
 		case "-o", "--output":
 			if i+1 >= len(args) || strings.TrimSpace(args[i+1]) == "" {
 				fmt.Fprintln(os.Stderr, "error: -o requires a value")
@@ -877,7 +872,7 @@ func parsePackCommand(args []string) {
 			i++
 		default:
 			fmt.Fprintf(os.Stderr, "unknown flag: %s\n", args[i])
-			fmt.Fprintln(os.Stderr, "  usage: lunex pack <file.lx|directory> [--source] [-o output.nax]")
+			fmt.Fprintln(os.Stderr, "  usage: lunex pack <file.lx|directory> [--no-source] [-o output.nax]")
 			os.Exit(1)
 		}
 	}
@@ -1003,7 +998,7 @@ func packCheckerLoader() checker.Loader {
 		resolved, ok := pkg.Resolve(path)
 		if !ok {
 			resolved = strings.TrimPrefix(path, "std.")
-			if !containsString([]string{"io", "fs", "http", "crypto", "db", "env", "testing", "ffi", "ws", "utils", "json", "jwt", "math", "datetime", "os", "regex", "buffer", "ints", "runtime", "http.router", "http.static"}, resolved) {
+			if !containsString([]string{"io", "fs", "http", "crypto", "db", "env", "testing", "ffi", "ws", "utils", "json", "jwt", "math", "datetime", "os", "regex", "buffer", "ints", "image", "runtime", "http.router", "http.static"}, resolved) {
 				return "", "", false
 			}
 			return "", "<std:" + resolved + ">", true
@@ -1296,7 +1291,7 @@ func checkFile(filePath string) {
 
 func checkerKnownModules(c *compiler.Compiler) map[string]map[string]struct{} {
 	known := make(map[string]map[string]struct{})
-	names := []string{"runtime", "io", "fs", "http", "crypto", "db", "env", "testing", "ffi", "ws", "utils", "json", "jwt", "math", "datetime", "os", "regex", "buffer", "ints", "http/router", "http/static", "internal.native"}
+	names := []string{"runtime", "io", "fs", "http", "crypto", "db", "env", "testing", "ffi", "ws", "utils", "json", "jwt", "math", "datetime", "os", "regex", "buffer", "ints", "image", "http/router", "http/static", "internal.native"}
 	for _, name := range names {
 		mod, ok := c.Interpreter().GetModule(name)
 		if !ok || mod == nil || mod.ObjVal == nil {
@@ -1439,12 +1434,21 @@ func unpackNAX(naxPath string) {
 	}
 	baseName := strings.TrimSuffix(filepath.Base(absPath), filepath.Ext(absPath))
 	outDir := filepath.Join(filepath.Dir(absPath), baseName)
-	if err := os.MkdirAll(outDir, 0755); err != nil {
+	if _, err := os.Lstat(outDir); err == nil {
+		fmt.Fprintf(os.Stderr, "error: refusing to unpack into existing path %s\n", outDir)
+		fmt.Fprintln(os.Stderr, "move the existing path or rename the archive before unpacking")
+		os.Exit(1)
+	} else if !os.IsNotExist(err) {
+		fmt.Fprintln(os.Stderr, "error checking output path:", err)
+		os.Exit(1)
+	}
+	if err := os.Mkdir(outDir, 0755); err != nil {
 		fmt.Fprintln(os.Stderr, "error creating output directory:", err)
 		os.Exit(1)
 	}
 	count, err := bytecode.UnpackNAX(data, outDir)
 	if err != nil {
+		_ = os.RemoveAll(outDir)
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
@@ -1667,7 +1671,7 @@ type replState struct {
 
 func newReplState() *replState {
 	c := compiler.New(compiler.Options{REPL: true, Silent: true})
-	std.RegisterAll(c)
+	std.RegisterLazy(c)
 	c.Interpreter().SetNTLLoader(pkgLoader)
 	return &replState{
 		c:      c,

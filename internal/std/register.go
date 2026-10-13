@@ -25,6 +25,7 @@ func RegisterAll(c *compiler.Compiler) {
 	regexMod := RegexModule()
 	bufferMod := BufferModule()
 	intsMod := IntsModule()
+	imageMod := ImageModule()
 
 	interp.RegisterModule("io", ioMod)
 	interp.RegisterModule("fs", fsMod)
@@ -40,6 +41,7 @@ func RegisterAll(c *compiler.Compiler) {
 	interp.RegisterModule("regex", regexMod)
 	interp.RegisterModule("buffer", bufferMod)
 	interp.RegisterModule("ints", intsMod)
+	interp.RegisterModule("image", imageMod)
 
 	envMod := EnvModule(interp)
 	testingMod := TestingModule(interp)
@@ -70,6 +72,7 @@ func RegisterAll(c *compiler.Compiler) {
 	native.ObjVal["regex"] = regexMod
 	native.ObjVal["buffer"] = bufferMod
 	native.ObjVal["ints"] = intsMod
+	native.ObjVal["image"] = imageMod
 	interp.RegisterModule("internal.native", native)
 	interp.RegisterModule("native", native)
 
@@ -117,6 +120,8 @@ func RegisterLazy(c *compiler.Compiler) {
 			return BufferModule(), true
 		case "ints":
 			return IntsModule(), true
+		case "image":
+			return ImageModule(), true
 		case "env":
 			return EnvModule(interp), true
 		case "testing":

@@ -76,3 +76,10 @@ func SlotIndex(info *ast.ScopeInfo, name string) int {
 	}
 	return -1
 }
+
+func SlotNames(info *ast.ScopeInfo) []string {
+	if info == nil {
+		return nil
+	}
+	return info.Names
+}

@@ -217,7 +217,42 @@ func (interp *Interpreter) callFunctionValue(fnVal *Value, args []*Value, thisVa
 		result, err := fn.Native(args, thisVal)
 		return result, err
 	}
+	if err := interp.checkFunctionArity(fn, args); err != nil {
+		return nil, err
+	}
 	return interp.callUserFunction(fn, args, thisVal)
+}
+
+func (interp *Interpreter) checkFunctionArity(fn *Function, args []*Value) error {
+	if fn == nil {
+		return nil
+	}
+	minArgs := 0
+	maxArgs := len(fn.Params)
+	for i, param := range fn.Params {
+		if param.Rest {
+			maxArgs = -1
+			break
+		}
+		if !fnParamHasDefault(param.Default) {
+			minArgs = i + 1
+		}
+	}
+	if len(args) >= minArgs && (maxArgs < 0 || len(args) <= maxArgs) {
+		return nil
+	}
+	name := fn.Name
+	if name == "" {
+		name = "anonymous function"
+	}
+	expected := fmt.Sprintf("%d", maxArgs)
+	if maxArgs < 0 {
+		expected = "at least " + fmt.Sprintf("%d", minArgs)
+	} else if minArgs != maxArgs {
+		expected = fmt.Sprintf("%d to %d", minArgs, maxArgs)
+	}
+	message := fmt.Sprintf("function `%s` expects %s arguments, got %d", name, expected, len(args))
+	return interp.runtimeError(errfmt.KindType, "E0021", message, nil, nil)
 }
 
 func (interp *Interpreter) callUserFunction(fn *Function, args []*Value, thisVal *Value) (*Value, error) {
@@ -263,8 +298,15 @@ func (interp *Interpreter) callUserFunction(fn *Function, args []*Value, thisVal
 		interp.defers = savedDefers
 		return Undefined, nil
 	}
+	if result, handled, err := interp.runFunctionJIT(fn, bodyNode, args); handled {
+		interp.defers = savedDefers
+		if fnProf != nil && t0 != 0 {
+			fnProf.Record(time.Now().UnixNano() - t0)
+		}
+		return result, err
+	}
 
-	fnEnv := NewResolvedEnvironment(fn.Env, resolver.SlotCount(bodyNode.ScopeInfo))
+	fnEnv := NewResolvedEnvironment(fn.Env, resolver.SlotCount(bodyNode.ScopeInfo), resolver.SlotNames(bodyNode.ScopeInfo))
 
 	defer ReleaseEnvironment(fnEnv)
 
@@ -384,7 +426,7 @@ func (interp *Interpreter) bindParams(params []FnParam, args []*Value, env *Envi
 			}
 		}
 		if param.Destructure != nil {
-			if err := interp.bindDestructure(param.Destructure, val, env); err != nil {
+			if err := interp.bindDestructure(param.Destructure, val, env, false); err != nil {
 				return err
 			}
 		} else if param.ResolvedSlot >= 0 {
@@ -396,23 +438,54 @@ func (interp *Interpreter) bindParams(params []FnParam, args []*Value, env *Envi
 	return nil
 }
 
-func (interp *Interpreter) bindDestructure(pattern interface{}, val *Value, env *Environment) error {
+func (interp *Interpreter) bindDestructure(pattern interface{}, val *Value, env *Environment, isConst bool) error {
 	m, ok := pattern.(map[string]interface{})
 	if !ok {
-		return nil
+		return fmt.Errorf("invalid destructuring pattern")
 	}
-	kind, _ := m["kind"].(string)
-	switch kind {
+	if val == nil {
+		val = Undefined
+	}
+	switch m["kind"] {
 	case "object":
+		if val.Tag != TypeObject && val.Tag != TypeInstance {
+			return fmt.Errorf("cannot destructure object from %s", val.TypeName())
+		}
 		props, _ := m["props"].([]map[string]interface{})
+		excluded := make(map[string]struct{}, len(props))
 		for _, prop := range props {
+			if prop["kind"] != "rest" {
+				key, _ := prop["key"].(string)
+				excluded[key] = struct{}{}
+			}
+		}
+		for _, prop := range props {
+			if prop["kind"] == "rest" {
+				name, _ := prop["name"].(string)
+				rest := make(map[string]*Value)
+				if val.Tag == TypeObject {
+					for key, fieldVal := range val.ObjVal {
+						if _, skip := excluded[key]; !skip {
+							rest[key] = fieldVal
+						}
+					}
+				} else if val.InstVal != nil {
+					for key, fieldVal := range val.InstVal.Fields {
+						if _, skip := excluded[key]; !skip {
+							rest[key] = fieldVal
+						}
+					}
+				}
+				env.Define(name, ObjectVal(rest), isConst)
+				continue
+			}
 			key, _ := prop["key"].(string)
 			alias, _ := prop["alias"].(string)
 			if alias == "" {
 				alias = key
 			}
 			fieldVal := val.Get(key)
-			if fieldVal.IsNullish() {
+			if fieldVal == nil || fieldVal.IsNullish() {
 				if defNode, ok := prop["default"]; ok && defNode != nil {
 					if dn, ok := defNode.(*ast.Node); ok {
 						v, err := interp.evalExpr(dn, env)
@@ -423,9 +496,15 @@ func (interp *Interpreter) bindDestructure(pattern interface{}, val *Value, env 
 					}
 				}
 			}
-			env.Define(alias, fieldVal, false)
+			if fieldVal == nil {
+				fieldVal = Undefined
+			}
+			env.Define(alias, fieldVal, isConst)
 		}
 	case "array":
+		if val.Tag != TypeArray {
+			return fmt.Errorf("cannot destructure array from %s", val.TypeName())
+		}
 		items, _ := m["items"].([]interface{})
 		for i, item := range items {
 			if item == nil {
@@ -433,20 +512,20 @@ func (interp *Interpreter) bindDestructure(pattern interface{}, val *Value, env 
 			}
 			itemMap, ok := item.(map[string]interface{})
 			if !ok {
-				continue
+				return fmt.Errorf("invalid array destructuring item")
 			}
 			if itemMap["kind"] == "rest" {
 				name, _ := itemMap["name"].(string)
 				var rest []*Value
-				if val.Tag == TypeArray && i < len(val.ArrVal) {
-					rest = val.ArrVal[i:]
+				if i < len(val.ArrVal) {
+					rest = append(rest, val.ArrVal[i:]...)
 				}
-				env.Define(name, ArrayVal(rest), false)
+				env.Define(name, ArrayVal(rest), isConst)
 				break
 			}
 			name, _ := itemMap["name"].(string)
 			var fieldVal *Value
-			if val.Tag == TypeArray && i < len(val.ArrVal) {
+			if i < len(val.ArrVal) {
 				fieldVal = val.ArrVal[i]
 			}
 			if fieldVal == nil || fieldVal.IsNullish() {
@@ -463,8 +542,10 @@ func (interp *Interpreter) bindDestructure(pattern interface{}, val *Value, env 
 			if fieldVal == nil {
 				fieldVal = Undefined
 			}
-			env.Define(name, fieldVal, false)
+			env.Define(name, fieldVal, isConst)
 		}
+	default:
+		return fmt.Errorf("unknown destructuring pattern kind %q", m["kind"])
 	}
 	return nil
 }

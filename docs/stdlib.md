@@ -1,6 +1,6 @@
 # Standard Library Reference
 
-Complete API reference for all built-in modules in Lunex v0.9.3.
+Complete API reference for all built-in modules in Lunex v0.9.4.
 
 All modules are embedded in the Lunex binary — no installation required.
 Import any module with `@import("std.<name>")`.
@@ -1430,6 +1430,65 @@ buf.writeU32(0, 4021, "be")
 buf.writeI16(4, -12, "be")
 io.log(buf.readU32(0, "be"))  
 io.log(buf.toHex())
+```
+
+---
+
+## `std.image` — Image manipulation
+
+```lx
+val image = @import("std.image")
+```
+
+Images are mutable objects backed by Go's image processing library. `width` and `height` are numeric properties. Transform methods update the image and return the same object, so calls can be chained.
+
+### Creating and loading
+
+| Function | Description |
+|---|---|
+| `image.create(width, height)` | New transparent image |
+| `image.create(width, height, r, g, b, a?)` | New image filled with an RGBA color; alpha defaults to 255 |
+| `image.open(path)` | Load an image from a file, applying JPEG orientation metadata when available |
+| `image.decode(bytes)` | Decode image data from a `std.buffer`, byte array, or byte string |
+
+Image dimensions must be positive and fit within the module's limits of 16,384 pixels per side and 16,777,216 total pixels.
+
+### Pixels and transforms
+
+| Method | Description |
+|---|---|
+| `img.width`, `img.height` | Current image dimensions |
+| `img.pixel(x, y)` | Return an object with `r`, `g`, `b`, and `a` values from 0 to 255 |
+| `img.setPixel(x, y, r, g, b, a?)` | Set one pixel; alpha defaults to 255 |
+| `img.resize(width, height)` | Resize using the Lanczos filter |
+| `img.crop(x, y, width, height)` | Crop a rectangle inside the image |
+| `img.rotate(degrees)` | Rotate counter-clockwise; uncovered pixels are transparent |
+| `img.flipH()` / `img.flipV()` | Flip horizontally or vertically |
+| `img.gray()` / `img.invert()` | Convert to grayscale or invert color channels |
+| `img.brightness(percent)` | Adjust brightness from -100 to 100 |
+| `img.contrast(percent)` | Adjust contrast from -100 to 100 |
+| `img.saturation(percent)` | Adjust saturation from -100 to 100 |
+| `img.blur(sigma)` / `img.sharpen(sigma)` | Apply Gaussian blur or sharpening with a positive sigma |
+| `img.paste(source, x, y, opacity?)` | Composite another image at an offset; opacity defaults to 1 and ranges from 0 to 1 |
+
+Pixel coordinates start at the top-left corner. Out-of-range pixel reads and writes return an error. Crop rectangles must fit inside the source image.
+
+### Encoding and saving
+
+| Method | Description |
+|---|---|
+| `img.encode(format?, quality?)` | Encode as a `std.buffer`; defaults to PNG |
+| `img.save(path, format?, quality?)` | Save to a file; without `format`, the file extension selects the format |
+
+Supported formats are `png`, `jpeg`, `jpg`, `gif`, `bmp`, `tiff`, and `tif`. JPEG quality is an optional integer from 1 to 100 and defaults to 95. Unsupported formats, invalid dimensions, invalid coordinates, and file errors are returned as errors.
+
+```lx
+val image = @import("std.image")
+
+val img = image.open("input.png")
+img.resize(800, 600)
+img.gray()
+img.save("output.png")
 ```
 
 ---

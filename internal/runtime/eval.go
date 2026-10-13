@@ -428,7 +428,13 @@ func (interp *Interpreter) evalUnary(node *ast.Node, env *Environment) (*Value, 
 			newNum = num - 1
 		}
 		newVal := NumberVal(newNum)
-		interp.assignToNode(node.Arg, newVal, env)
+		err = interp.assignToNode(node.Arg, newVal, env)
+		if err != nil {
+			return nil, err
+		}
+		if err := interp.notifyWatchers(); err != nil {
+			return nil, err
+		}
 		if node.Prefix {
 			return newVal, nil
 		}
@@ -469,6 +475,9 @@ func (interp *Interpreter) evalAssign(node *ast.Node, env *Environment) (*Value,
 	}
 	err = interp.assignToNode(node.Left, right, env)
 	if err != nil {
+		return nil, err
+	}
+	if err := interp.notifyWatchers(); err != nil {
 		return nil, err
 	}
 	return right, nil
@@ -617,6 +626,9 @@ func (interp *Interpreter) assignToNode(target *ast.Node, val *Value, env *Envir
 		if err != nil {
 			return err
 		}
+		if obj == nil || obj.IsNullish() {
+			return interp.runtimeError(errfmt.KindType, "E0005", "cannot assign a member of null or undefined", target, nil)
+		}
 		if target.Computed {
 			keyVal, err := interp.evalExpr(target.Prop.(*ast.Node), env)
 			if err != nil {
@@ -632,10 +644,11 @@ func (interp *Interpreter) assignToNode(target *ast.Node, val *Value, env *Envir
 			} else {
 				obj.Set(key, val)
 			}
-		} else {
-			key, _ := target.Prop.(string)
-			obj.Set(key, val)
+			return nil
 		}
+		key, _ := target.Prop.(string)
+		obj.Set(key, val)
+		return nil
 	}
 	return nil
 }

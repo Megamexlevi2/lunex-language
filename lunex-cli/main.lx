@@ -63,3 +63,6 @@ fn help() {
 fn run(argv) {
   core.run(argv)
 }
+
+
+fn main(){ }

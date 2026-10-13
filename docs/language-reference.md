@@ -1,6 +1,6 @@
 # Language Reference
 
-Complete reference for the Lunex programming language, version 0.9.3.
+Complete reference for the Lunex programming language, version 0.9.4.
 
 ---
 
@@ -9,7 +9,7 @@ Complete reference for the Lunex programming language, version 0.9.3.
 ### Comments
 
 ```lx
-
+//
 ```
 
 ### Identifiers
@@ -63,7 +63,6 @@ sections below document the ones with confirmed, working behavior.
 ---
 
 ## Bindings
-
 ### `val` — immutable binding
 
 ```lx
@@ -73,7 +72,6 @@ val pi   = 3.14159
 ```
 
 `val` bindings cannot be reassigned. Trying to do so is a compile-time error.
-`const` is accepted as an alias for `val` — the two behave identically.
 
 ### `var` — mutable binding
 
@@ -82,21 +80,23 @@ var count = 0
 count = count + 1
 ```
 
-`let` is accepted as an alias for `var` — the two behave identically.
-
 ### Destructuring
 
-Object destructuring:
+Object destructuring supports property aliases, default values, and a rest object:
 
 ```lx
-val { name, role, score } = getUser()
+val { name, role: access, score = 0, ...extra } = getUser()
 ```
 
-Array destructuring:
+Array destructuring supports skipped elements, default values, and a rest array:
 
 ```lx
-val [first, second, third] = getItems()
+val [first, , third = 0, ...remaining] = getItems()
 ```
+
+Destructured bindings follow the declaration keyword: `val` bindings are
+immutable, while `var` bindings are mutable. Destructuring requires an object
+or struct instance for object patterns and an array for array patterns.
 
 ---
 

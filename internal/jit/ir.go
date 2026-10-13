@@ -5,6 +5,7 @@ import (
 	"lunex/internal/ast"
 	"math"
 	"strconv"
+	"unsafe"
 )
 
 const (
@@ -20,6 +21,7 @@ const (
 	StatusTimeout
 	StatusDivisionByZero
 	StatusDeopt
+	StatusCallDepth
 )
 
 type Context struct {
@@ -32,7 +34,17 @@ type Context struct {
 	ErrorNode   int64
 	RepeatLimit int64
 	Counters    [MaxCounter]int64
+	Result      float64
+	FrameDepth  int64
+	FrameLimit  int64
 }
+
+const (
+	ctxResultOff     = int(unsafe.Offsetof(Context{}.Result))
+	ctxFrameDepthOff = int(unsafe.Offsetof(Context{}.FrameDepth))
+	ctxFrameLimitOff = int(unsafe.Offsetof(Context{}.FrameLimit))
+	ctxFrameSize     = int(unsafe.Sizeof(Context{}))
+)
 
 type Reference struct {
 	Hops int
@@ -77,6 +89,8 @@ const (
 	OpRepeatDecrement
 	OpBreak
 	OpReturn
+	OpCallSelf
+	OpReturnValue
 )
 
 type CompareOp uint8
@@ -110,6 +124,10 @@ type Program struct {
 	RangeStart      int
 	RangeStep       int
 	RangeIndex      int
+	FunctionMode    bool
+	FunctionName    string
+	Recursive       bool
+	ParamSlots      []int
 }
 
 func (p *Program) NewContext() *Context {
@@ -145,13 +163,13 @@ func CompileLoop(node *ast.Node, tier int) (*Program, error) {
 		return nil, fmt.Errorf("nil loop")
 	}
 	c := compiler{
-		program: &Program{Tier: tier, Labels: make(map[int]int)},
-		tier:    tier,
-		refs:    make(map[Reference]int),
-		consts:  make(map[uint64]int),
-		nodes:   make(map[*ast.Node]int),
-		labels:  make(map[int]int),
-		locals:  make(map[[2]int]int),
+		program:     &Program{Tier: tier, Labels: make(map[int]int)},
+		tier:        tier,
+		refs:        make(map[Reference]int),
+		consts:      make(map[uint64]int),
+		nodes:       make(map[*ast.Node]int),
+		labels:      make(map[int]int),
+		locals:      make(map[[2]int]int),
 		constLocals: make(map[int]bool),
 	}
 	limits := []float64{0, math.Ldexp(1, 63), -math.Ldexp(1, 63), 1}
@@ -187,6 +205,7 @@ func CompileLoop(node *ast.Node, tier int) (*Program, error) {
 	c.program.Nodes = c.nodeList
 	if tier >= 2 {
 		coalesceTicks(c.program)
+		optimizeBytecode(c.program)
 	}
 	machine, err := emitMachine(c.program)
 	if err != nil {
@@ -203,24 +222,220 @@ func CompileLoop(node *ast.Node, tier int) (*Program, error) {
 	return c.program, nil
 }
 
+func CompileFunction(body *ast.Node, name string, paramSlots []int, tier int) (*Program, error) {
+	if tier < 1 || tier > 2 {
+		return nil, fmt.Errorf("unsupported native tier %d", tier)
+	}
+	if body == nil {
+		return nil, fmt.Errorf("nil function body")
+	}
+	if len(paramSlots) > 32 {
+		return nil, fmt.Errorf("native functions support at most 32 numeric parameters")
+	}
+	if !functionReturnsValue(body) {
+		return nil, fmt.Errorf("function may fall through without returning a value")
+	}
+	c := compiler{
+		program:     &Program{Tier: tier, Labels: make(map[int]int), FunctionMode: true, FunctionName: name},
+		tier:        tier,
+		refs:        make(map[Reference]int),
+		consts:      make(map[uint64]int),
+		nodes:       make(map[*ast.Node]int),
+		labels:      make(map[int]int),
+		locals:      make(map[[2]int]int),
+		constLocals: make(map[int]bool),
+	}
+	limits := []float64{0, math.Ldexp(1, 63), -math.Ldexp(1, 63), 1}
+	for _, v := range limits {
+		c.program.Constants = append(c.program.Constants, v)
+		c.consts[math.Float64bits(v)] = len(c.program.Constants) - 1
+	}
+	layer := c.enterLayer()
+	for _, slot := range paramSlots {
+		if slot < 0 {
+			return nil, fmt.Errorf("function parameter has no resolved numeric slot")
+		}
+		c.program.ParamSlots = append(c.program.ParamSlots, c.localRef(layer, slot))
+	}
+	statements := body.Body_
+	if body.Type != ast.Block {
+		statements = []*ast.Node{body}
+	}
+	for i, stmt := range statements {
+		if i == len(statements)-1 {
+			if err := c.compileReturnValueFrom(stmt); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		if err := c.compileStmt(stmt); err != nil {
+			return nil, err
+		}
+	}
+	if c.stack != 0 {
+		return nil, fmt.Errorf("native function stack is not balanced: %d", c.stack)
+	}
+	if c.maxStack > MaxStack {
+		return nil, fmt.Errorf("function expression stack depth %d exceeds native limit %d", c.maxStack, MaxStack)
+	}
+	if len(c.program.Refs) > MaxSlots {
+		return nil, fmt.Errorf("function references %d slots, native limit is %d", len(c.program.Refs), MaxSlots)
+	}
+	if len(c.layers) != 1 {
+		return nil, fmt.Errorf("native function scope stack is unbalanced")
+	}
+	for _, ref := range c.program.Refs {
+		if ref.Hops >= 0 {
+			return nil, fmt.Errorf("function captures or reads an external value")
+		}
+	}
+	if len(c.program.Constants) > MaxConsts {
+		return nil, fmt.Errorf("function uses %d numeric constants, native limit is %d", len(c.program.Constants), MaxConsts)
+	}
+	c.program.ExpressionStack = c.maxStack
+	c.program.Bytecode = c.code
+	c.program.Labels = c.labels
+	c.program.Nodes = c.nodeList
+	if tier >= 2 {
+		coalesceTicks(c.program)
+		optimizeBytecode(c.program)
+	}
+	machine, err := emitMachine(c.program)
+	if err != nil {
+		return nil, err
+	}
+	c.program.Code = machine
+	if err := selfCheck(c.program); err != nil {
+		_ = c.program.Close()
+		return nil, err
+	}
+	return c.program, nil
+}
+
+func (c *compiler) compileReturnValueFrom(node *ast.Node) error {
+	if node == nil {
+		return fmt.Errorf("missing final function value")
+	}
+	if node.Type == ast.Block {
+		if len(node.Body_) == 0 {
+			return fmt.Errorf("empty block has no native return value")
+		}
+		c.emitTick(node)
+		own := blockOwnsScope(node)
+		if own {
+			c.enterLayer()
+		}
+		for _, stmt := range node.Body_[:len(node.Body_)-1] {
+			if err := c.compileStmt(stmt); err != nil {
+				if own {
+					c.leaveLayer()
+				}
+				return err
+			}
+		}
+		if err := c.compileReturnValueFrom(node.Body_[len(node.Body_)-1]); err != nil {
+			if own {
+				c.leaveLayer()
+			}
+			return err
+		}
+		if own {
+			c.leaveLayer()
+		}
+		return nil
+	}
+	if node.Type == ast.IfStmt || node.Type == ast.UnlessStmt {
+		if node.Test == nil || node.Consequent == nil || node.Alternate == nil {
+			return fmt.Errorf("value-producing conditional requires both branches")
+		}
+		c.emitTick(node)
+		if err := c.compileExpr(node.Test); err != nil {
+			return err
+		}
+		other := c.newLabel()
+		branch := OpBranchFalse
+		if node.Type == ast.UnlessStmt {
+			branch = OpBranchTrue
+		}
+		c.branch(branch, other)
+		c.push(-1)
+		if err := c.compileReturnValueFrom(node.Consequent); err != nil {
+			return err
+		}
+		c.labels[other] = len(c.code)
+		return c.compileReturnValueFrom(node.Alternate)
+	}
+	if node.Type == ast.ReturnStmt {
+		return c.compileStmt(node)
+	}
+	if node.Type == ast.ExprStmt {
+		c.emitTick(node)
+		if err := c.compileExpr(node.Expr); err != nil {
+			return err
+		}
+		c.emit(Instruction{Op: OpReturnValue, ErrorNode: c.nodeID(node)})
+		c.push(-1)
+		return nil
+	}
+	c.emitTick(node)
+	if err := c.compileExpr(node); err != nil {
+		return err
+	}
+	c.emit(Instruction{Op: OpReturnValue, ErrorNode: c.nodeID(node)})
+	c.push(-1)
+	return nil
+}
+
+func functionReturnsValue(body *ast.Node) bool {
+	if body == nil {
+		return false
+	}
+	if body.Type != ast.Block {
+		return body.Type != ast.VoidExpr
+	}
+	if len(body.Body_) == 0 {
+		return false
+	}
+	var returns func(*ast.Node) bool
+	returns = func(node *ast.Node) bool {
+		if node == nil {
+			return false
+		}
+		switch node.Type {
+		case ast.ReturnStmt:
+			value, ok := node.Value.(*ast.Node)
+			return ok && value != nil
+		case ast.Block:
+			return len(node.Body_) > 0 && returns(node.Body_[len(node.Body_)-1])
+		case ast.IfStmt, ast.UnlessStmt:
+			return node.Alternate != nil && returns(node.Consequent) && returns(node.Alternate)
+		case ast.ExprStmt:
+			return node.Expr != nil
+		default:
+			return false
+		}
+	}
+	return returns(body.Body_[len(body.Body_)-1])
+}
+
 type compiler struct {
-	program   *Program
-	tier      int
-	refs      map[Reference]int
-	consts    map[uint64]int
-	nodes     map[*ast.Node]int
-	nodeList  []*ast.Node
-	code      []Instruction
-	labels    map[int]int
-	loops     []loopTarget
-	nextLabel int
-	stack     int
-	maxStack  int
-	layers    []int
-	nextLayer int
-	scratch   int
-	locals    map[[2]int]int
-	constLocals   map[int]bool
+	program     *Program
+	tier        int
+	refs        map[Reference]int
+	consts      map[uint64]int
+	nodes       map[*ast.Node]int
+	nodeList    []*ast.Node
+	code        []Instruction
+	labels      map[int]int
+	loops       []loopTarget
+	nextLabel   int
+	stack       int
+	maxStack    int
+	layers      []int
+	nextLayer   int
+	scratch     int
+	locals      map[[2]int]int
+	constLocals map[int]bool
 }
 
 type loopTarget struct {
@@ -542,7 +757,7 @@ func (c *compiler) compileStmt(node *ast.Node) error {
 		if own {
 			c.leaveLayer()
 		}
-	case ast.VarDecl:
+	case ast.VarDecl, ast.ImmutableDecl:
 		if err := c.compileVarDecl(node); err != nil {
 			return err
 		}
@@ -551,6 +766,19 @@ func (c *compiler) compileStmt(node *ast.Node) error {
 			return err
 		}
 		c.emit(Instruction{Op: OpPop})
+		c.push(-1)
+	case ast.ReturnStmt:
+		if !c.program.FunctionMode {
+			return fmt.Errorf("return is outside native loop subset")
+		}
+		value, ok := node.Value.(*ast.Node)
+		if !ok || value == nil {
+			return fmt.Errorf("void return is outside native numeric subset")
+		}
+		if err := c.compileExpr(value); err != nil {
+			return err
+		}
+		c.emit(Instruction{Op: OpReturnValue, ErrorNode: c.nodeID(node)})
 		c.push(-1)
 	case ast.BreakStmt:
 		if len(c.loops) == 0 {
@@ -651,6 +879,22 @@ func (c *compiler) compileExpr(node *ast.Node) error {
 		c.markRead(idx)
 		c.emit(Instruction{Op: OpLoadSlot, A: idx})
 		c.push(1)
+	case ast.CallExpr:
+		if !c.program.FunctionMode || node.Optional || node.Callee == nil || node.Callee.Type != ast.Identifier || node.Callee.Name == "" {
+			return fmt.Errorf("call is outside native numeric function subset")
+		}
+		functionName := c.program.FunctionName
+		if node.Callee.Name != functionName || len(node.Args) != len(c.program.ParamSlots) {
+			return fmt.Errorf("only direct self-recursion with matching numeric arguments is supported")
+		}
+		for _, arg := range node.Args {
+			if err := c.compileExpr(arg); err != nil {
+				return err
+			}
+		}
+		c.emit(Instruction{Op: OpCallSelf, A: len(node.Args), ErrorNode: c.nodeID(node)})
+		c.program.Recursive = true
+		c.push(1 - len(node.Args))
 	case ast.BinaryExpr:
 		if err := c.compileExpr(node.Left); err != nil {
 			return err

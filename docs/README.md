@@ -11,5 +11,3 @@
 ---
 
 For a quick start, see the [README](../README.md) and the [examples/](../examples/) directory.
-
-The language reference includes reactive `watch` statements for observing variable and member-value changes.

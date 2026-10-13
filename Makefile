@@ -2,7 +2,7 @@ SHELL := /usr/bin/env bash
 
 VERSION := $(shell grep -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' internal/app/version.json | sed 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
 
-GO_MIN := 1.25
+GO_MIN := 1.25.5
 GO_VER := 1.25.14
 
 UNAME_S := $(shell uname -s)

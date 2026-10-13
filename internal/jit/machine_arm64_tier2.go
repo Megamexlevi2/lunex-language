@@ -9,7 +9,7 @@ const (
 	t2ArmUsedReg   = 7
 	t2ArmZeroFP    = 7
 	t2ArmTmpFP     = 6
-	t2ArmMaxStack  = 6
+	t2ArmMaxStack  = 30
 )
 
 func (w *a64Writer) syncTier2Counters() {
@@ -20,6 +20,11 @@ func (w *a64Writer) syncTier2Counters() {
 func fmovD(rd, rn uint32) uint32 { return 0x1E604000 | (rn << 5) | rd }
 
 func emitMachineTier2(p *Program) ([]byte, error) {
+	for _, in := range p.Bytecode {
+		if in.Op == OpCallSelf {
+			return emitMachineLegacy(p)
+		}
+	}
 	depths, err := bytecodeStackDepths(p)
 	if err != nil {
 		return nil, err
@@ -64,7 +69,12 @@ func emitMachineTier2(p *Program) ([]byte, error) {
 			w.mark(label)
 		}
 		d := depths[i]
-		x := func(index int) uint32 { return uint32(index) }
+		x := func(index int) uint32 {
+			if index >= 6 {
+				index += 2
+			}
+			return uint32(index)
+		}
 		if d > t2ArmMaxStack {
 			return emitMachineLegacy(p)
 		}
@@ -233,6 +243,12 @@ func emitMachineTier2(p *Program) ([]byte, error) {
 			w.syncTier2Counters()
 			w.setStatus(StatusBreak, int64(in.ErrorNode))
 			w.branch(in.Target)
+		case OpReturnValue:
+			if !p.FunctionMode {
+				return fail(i, fmt.Errorf("value-return opcode outside function"))
+			}
+			w.u32(strD(x(d-1), regCtx, ctxResultOff))
+			w.branch(returnLabel)
 		case OpReturn:
 			w.branch(returnLabel)
 		default:

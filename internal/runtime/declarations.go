@@ -14,7 +14,7 @@ func (interp *Interpreter) execVarDecl(node *ast.Node, env *Environment) (*Value
 		}
 	}
 	if node.Destructure != nil {
-		return Undefined, interp.bindDestructure(node.Destructure, val, env)
+		return Undefined, interp.bindDestructure(node.Destructure, val, env, node.IsConst)
 	}
 	if addr := node.ResolvedAddr; addr != nil {
 

@@ -20,7 +20,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 NTL_VERSION="$(grep -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' "$SCRIPT_DIR/internal/app/version.json" | sed 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')"
 
-GO_MIN="1.25"
+GO_MIN="1.25.5"
 
 banner() {
     printf '\n  Lunex lang  v%s\n  Created by David Dev\n  GitHub: https://github.com/Megamexlevi2\n\n' "$NTL_VERSION"

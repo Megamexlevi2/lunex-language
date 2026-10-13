@@ -4,6 +4,7 @@ package jit
 
 import (
 	"fmt"
+
 	"golang.org/x/sys/unix"
 )
 
@@ -31,7 +32,11 @@ func darwinProtect(code []byte) error {
 	if len(code) == 0 {
 		return fmt.Errorf("empty executable buffer")
 	}
-	return unix.Mprotect(code, unix.PROT_READ|unix.PROT_EXEC)
+	if err := unix.Mprotect(code, unix.PROT_READ|unix.PROT_EXEC); err != nil {
+		return err
+	}
+	syncInstructionCache(code)
+	return nil
 }
 
 func darwinRelease(code []byte) error {

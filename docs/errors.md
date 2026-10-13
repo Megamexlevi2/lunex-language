@@ -273,6 +273,10 @@ Include:
 
 ## `watch`
 
-### E0114 — Invalid watch declaration
+### E0117 — Invalid watch declaration
 
 The runtime received an invalid `watch` declaration. Source code normally catches this earlier during parsing. A valid target is a variable or member expression followed by a block.
+
+### E0118 — Watch callback failed
+
+The watch callback raised a runtime error while processing a changed value. The original callback error is preserved when possible.

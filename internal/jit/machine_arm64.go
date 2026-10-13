@@ -44,6 +44,7 @@ type a64Writer struct {
 const (
 	a64B     = 1
 	a64BCond = 2
+	a64BL    = 3
 )
 
 func (w *a64Writer) u32(v uint32) {
@@ -66,9 +67,18 @@ func (w *a64Writer) branchCond(cond uint32, label int) {
 	w.patches = append(w.patches, a64Patch{pos: pos, label: label, kind: a64BCond})
 }
 
+func (w *a64Writer) callCodeStart() {
+	pos := len(w.b)
+	w.u32(0x94000000)
+	w.patches = append(w.patches, a64Patch{pos: pos, label: -1, kind: a64BL})
+}
+
 func (w *a64Writer) patchAll() error {
 	for _, p := range w.patches {
 		target, ok := w.labels[p.label]
+		if p.kind == a64BL && p.label == -1 {
+			target, ok = 0, true
+		}
 		if !ok {
 			return fmt.Errorf("unresolved native label %d", p.label)
 		}
@@ -77,11 +87,15 @@ func (w *a64Writer) patchAll() error {
 			return fmt.Errorf("unaligned ARM64 branch target")
 		}
 		words := delta / 4
-		if p.kind == a64B {
+		if p.kind == a64B || p.kind == a64BL {
 			if words < -(1<<25) || words >= (1<<25) {
 				return fmt.Errorf("ARM64 branch out of range: %d", words)
 			}
-			v := 0x14000000 | uint32(int32(words)&0x03ffffff)
+			base := uint32(0x14000000)
+			if p.kind == a64BL {
+				base = 0x94000000
+			}
+			v := base | uint32(int32(words)&0x03ffffff)
 			w.put(p.pos, v)
 		} else {
 			if words < -(1<<18) || words >= (1<<18) {
@@ -202,6 +216,75 @@ func (w *a64Writer) movImm64(rd uint32, v uint64) {
 	w.u32(0xF2800000 | (uint32((v>>16)&0xffff) << 5) | (1 << 21) | rd)
 	w.u32(0xF2800000 | (uint32((v>>32)&0xffff) << 5) | (2 << 21) | rd)
 	w.u32(0xF2800000 | (uint32((v>>48)&0xffff) << 5) | (3 << 21) | rd)
+}
+
+func addReg64(rd, rn, rm uint32) uint32 {
+	return 0x8B000000 | (rm << 16) | (rn << 5) | rd
+}
+
+func subReg64(rd, rn, rm uint32) uint32 {
+	return 0xCB000000 | (rm << 16) | (rn << 5) | rd
+}
+
+func stpXPre(rt, rt2 uint32) uint32 {
+	return 0xA9BF0000 | (rt2 << 10) | (31 << 5) | rt
+}
+
+func ldpXPost(rt, rt2 uint32) uint32 {
+	return 0xA8C10000 | (rt2 << 10) | (31 << 5) | rt
+}
+
+func (w *a64Writer) callSelf(program *Program, in Instruction, returnLabel int) error {
+	depthOK := (1 << 27) + len(w.b)
+	w.u32(ldrX(regA, regCtx, ctxFrameDepthOff))
+	w.u32(ldrX(regB, regCtx, ctxFrameLimitOff))
+	w.u32(cmpX(regA, regB))
+	w.branchCond(11, depthOK)
+	w.setStatus(StatusCallDepth, int64(in.ErrorNode))
+	w.branch(returnLabel)
+	w.mark(depthOK)
+	w.u32(ldrX(regA, regCtx, ctxFrameDepthOff))
+	w.u32(addImm64(regA, regA, 1))
+	w.u32(ldrX(regB, regCtx, ctxFrameLimitOff))
+	w.u32(ldrX(regC, regCtx, ctxBudgetOff))
+	w.u32(ldrX(regD, regCtx, ctxUsedOff))
+	w.u32(stpXPre(regCtx, regStack))
+	w.u32(stpXPre(30, 31))
+	w.movImm64(6, uint64(ctxFrameSize))
+	w.u32(addReg64(regCtx, regCtx, 6))
+	for i, slot := range program.ParamSlots {
+		w.u32(ldrD(fp0, regStack, (i-in.A)*8))
+		w.u32(strD(fp0, regCtx, ctxSlotsOff+slot*8))
+	}
+	w.u32(strX(regA, regCtx, ctxFrameDepthOff))
+	w.u32(strX(regB, regCtx, ctxFrameLimitOff))
+	w.u32(strX(regC, regCtx, ctxBudgetOff))
+	w.u32(strX(regD, regCtx, ctxUsedOff))
+	w.movImm64(regA, uint64(StatusOK))
+	w.u32(strX(regA, regCtx, ctxStatusOff))
+	w.movImm64(regA, ^uint64(0))
+	w.u32(strX(regA, regCtx, ctxErrorNodeOff))
+	w.callCodeStart()
+	w.u32(ldrX(regA, regCtx, ctxStatusOff))
+	w.u32(ldrX(regB, regCtx, ctxErrorNodeOff))
+	w.u32(ldrX(regC, regCtx, ctxUsedOff))
+	w.u32(ldrD(fp0, regCtx, ctxResultOff))
+	w.movImm64(6, uint64(ctxFrameSize))
+	w.u32(subReg64(regCtx, regCtx, 6))
+	w.u32(strX(regA, regCtx, ctxStatusOff))
+	w.u32(strX(regB, regCtx, ctxErrorNodeOff))
+	w.u32(strX(regC, regCtx, ctxUsedOff))
+	w.u32(ldpXPost(30, 31))
+	w.u32(ldpXPost(regCtx, regStack))
+	w.u32(ldrX(regA, regCtx, ctxStatusOff))
+	w.u32(cmpXZero(regA))
+	w.branchCond(1, returnLabel)
+	if in.A > 0 {
+		w.u32(subImm64(regStack, regStack, uint32(in.A*8)))
+	}
+	w.u32(strD(fp0, regStack, 0))
+	w.u32(addImm64(regStack, regStack, 8))
+	return nil
 }
 
 func emitMachineLegacy(p *Program) ([]byte, error) {
@@ -449,6 +532,20 @@ func emitMachineLegacy(p *Program) ([]byte, error) {
 		case OpBreak:
 			w.setStatus(StatusBreak, int64(in.ErrorNode))
 			w.branch(in.Target)
+		case OpCallSelf:
+			if !p.FunctionMode {
+				return fail(i, fmt.Errorf("self-call opcode outside function"))
+			}
+			if err := w.callSelf(p, in, returnLabel); err != nil {
+				return fail(i, err)
+			}
+		case OpReturnValue:
+			if !p.FunctionMode {
+				return fail(i, fmt.Errorf("value-return opcode outside function"))
+			}
+			w.u32(ldrD(fp0, regStack, -8))
+			w.u32(strD(fp0, regCtx, ctxResultOff))
+			w.branch(returnLabel)
 		case OpReturn:
 			w.branch(returnLabel)
 		default:

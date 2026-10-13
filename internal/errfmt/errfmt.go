@@ -259,6 +259,8 @@ var codeRegistry = map[string]codeDisplay{
 	"E0114":  {"E0114", "circular structure in JSON output", "std.json.stringify cannot serialize a self-referencing value"},
 	"E0115":  {"E0115", "JSON file operation failed", "std.json could not read or write the requested file"},
 	"E0116":  {"E0116", "JSON value nested too deeply", "std.json refused to parse or serialize past the depth limit"},
+	"E0117":  {"E0117", "invalid watch declaration", "watch target must be a variable or member expression followed by a block"},
+	"E0118":  {"E0118", "watch callback failed", "an error occurred while executing a watch callback"},
 	"E0120":  {"E0120", "native FFI is disabled", "enable FFI with the CLI-only `ffi = on` prefix"},
 	"E0121":  {"E0121", "invalid FFI library path", "provide a non-empty native library path"},
 	"E0122":  {"E0122", "native library load failed", "check the library path, architecture, dependencies, and loader rules"},
@@ -1007,6 +1009,14 @@ func buildSuggestions(code, name, msg string, similar []string) []string {
 
 	case "E0116":
 		add("flatten or restructure the value — std.json caps nesting at 512 levels to avoid a runaway parse or serialize")
+		return out
+
+	case "E0117":
+		add("watch a variable or member expression followed by a block")
+		return out
+
+	case "E0118":
+		add("fix the error raised by the watch callback before retrying the assignment")
 		return out
 	}
 

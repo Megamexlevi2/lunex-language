@@ -1,6 +1,6 @@
 # Lunex Examples
 
-Compatible with Lunex v0.9.3.
+Compatible with Lunex v0.9.4
 
 ## Running
 

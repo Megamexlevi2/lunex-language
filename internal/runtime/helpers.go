@@ -46,15 +46,34 @@ func (e *continueError) Error() string { return "continue" }
 func paramsToFnParams(params []*ast.Param) []FnParam {
 	result := make([]FnParam, len(params))
 	for i, p := range params {
+		var defaultValue interface{}
+		if p.DefaultVal != nil {
+			defaultValue = p.DefaultVal
+		}
 		result[i] = FnParam{
 			Name:         p.Name,
-			Default:      p.DefaultVal,
+			Default:      defaultValue,
 			Rest:         p.Rest,
 			Destructure:  p.Destructure,
 			ResolvedSlot: p.ResolvedSlot,
 		}
 	}
 	return result
+}
+
+func normalizeCallbackArgs(fn *Value, args []*Value) []*Value {
+	if fn == nil || fn.Tag != TypeFunction || fn.FnVal == nil || fn.FnVal.Native != nil {
+		return args
+	}
+	for _, param := range fn.FnVal.Params {
+		if param.Rest {
+			return args
+		}
+	}
+	if len(args) > len(fn.FnVal.Params) {
+		return args[:len(fn.FnVal.Params)]
+	}
+	return args
 }
 
 func isInstanceOf(inst *Instance, cls *Class) bool {

@@ -4,9 +4,12 @@ package jit
 
 import (
 	"fmt"
-	"golang.org/x/sys/windows"
 	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
+
+var flushInstructionCacheProc = windows.NewLazySystemDLL("kernel32.dll").NewProc("FlushInstructionCache")
 
 func init() {
 	allocateExecutable = windowsAllocate
@@ -36,7 +39,24 @@ func windowsProtect(code []byte) error {
 		return fmt.Errorf("empty executable buffer")
 	}
 	var old uint32
-	return windows.VirtualProtect(uintptr(unsafe.Pointer(&code[0])), uintptr(len(code)), windows.PAGE_EXECUTE_READ, &old)
+	if err := windows.VirtualProtect(uintptr(unsafe.Pointer(&code[0])), uintptr(len(code)), windows.PAGE_EXECUTE_READ, &old); err != nil {
+		return err
+	}
+	handle, err := windows.GetCurrentProcess()
+	if err != nil {
+		return err
+	}
+	if err := flushInstructionCacheProc.Find(); err != nil {
+		return err
+	}
+	result, _, callErr := flushInstructionCacheProc.Call(uintptr(handle), uintptr(unsafe.Pointer(&code[0])), uintptr(len(code)))
+	if result == 0 {
+		if callErr != nil {
+			return callErr
+		}
+		return fmt.Errorf("FlushInstructionCache failed")
+	}
+	return nil
 }
 
 func windowsRelease(code []byte) error {

@@ -20,7 +20,7 @@ Download the binary for your platform from the
 
 ### Build from source
 
-Requires Go 1.25 or later.
+Requires Go 1.25.5 or later.
 
 ```bash
 git clone https://github.com/Megamexlevi2/lunex-language
@@ -78,11 +78,11 @@ var counter = 0
 counter = counter + 1
 ```
 
-Destructuring works on objects and arrays:
+Destructuring works on objects and arrays at the top level and inside functions or blocks. Object fields can be renamed, defaults can be supplied, and `...rest` collects remaining fields or array elements:
 
 ```lx
-val { name, role } = user
-val [first, second] = items
+val { name, role: access, missing = "guest", ...extra } = user
+val [first, second, ...remaining] = items
 ```
 
 ### Functions
@@ -243,14 +243,13 @@ lunex start                        run the project entry from lunex.toml
 lunex debug <file>                 run with full compile diagnostics and a stack trace on error
 lunex -e "<code>"                  run a code snippet directly
 lunex repl                         start the interactive REPL
-lunex pack <file.lx|directory>    validate and bundle to .nax archive with optimized .nlo objects
-lunex check <file>                 production semantic check without running user code
+lunex pack <file.lx|directory>     compile and bundle a file or directory into .nax (source preserved by default)
+lunex check <file>                 static checks and diagnostics without running user code
 lunex see_errors <file>            show detailed compile errors
 lunex init [name]                  create a new project folder
 lunex init <template> <name>       create a project from a template
                                       (http_server, database, website)
-lunex unpack <file.nax>            recover .lx code from optimized objects or extract stored source files
-lunex recover <file.nlo>               recover canonical .lx code from an NLO object
+lunex unpack <file.nax>             recover .lx files from compiled entries or stored source
 lunex set cache <dir>              set the on-disk runtime cache directory
 lunex set cache reset              reset the cache directory to default
 lunex cache [clear]                show or clear the on-disk runtime cache
@@ -278,7 +277,9 @@ Extra options: `lunex --help-extras`
 ## Package Management
 
 Lunex includes a Go-based package manager in the CLI, backed by `lunex.toml`
-and `lunex.lock`. See [`modulesys.md`](modulesys.md) for the full picture.
+and `lunex.lock`. Use `lunex add <url>[@version]` to declare and install a dependency,
+then `lunex install` to install the dependencies declared by the current project.
+See [`modulesys.md`](modulesys.md) for the full picture.
 
 ```bash
 lunex install
@@ -293,8 +294,7 @@ lunex link
 ```
 
 Installed libraries live in `~/.lunex/modules` (global, shared across every
-project) or `./.lunex/modules` (local, scoped to a single project) — never
-directly in a `cache/` folder. Each installed version gets its own
+project) or `./.lunex/modules` (local, scoped to a single project). Each installed version gets its own
 `<name>@<version>` directory, so two projects can depend on different
 versions of the same library without conflict. Resolution when you write
 `@import("pkg-name")` checks the local store first, then the global store.
@@ -330,6 +330,9 @@ val xml = @import("lune-xml")
 |----------------|----------------------------------------------------------|
 | `std.io`       | Console output, input, colors, tables, spinner           |
 | `std.fs`       | File system: read, write, list, stat                     |
+| `std.buffer`   | Byte buffer creation, conversion, slicing, and operations |
+| `std.ints`     | Fixed-width integer and bitwise operations                |
+| `std.image`    | Image decoding, encoding, pixel access, transformations, and compositing |
 | `std.http`     | HTTP client and server primitives                        |
 | `std.http.router` | Request routing on top of `std.http`                  |
 | `std.http.static` | Static file handler on top of `std.http`              |
@@ -347,7 +350,7 @@ val xml = @import("lune-xml")
 | `std.testing`  | Lunex-native test registration, assertions, lifecycle hooks, diagnostics, snapshots, and execution |
 | `std.utils`    | Array, object, string, and functional helpers            |
 
-FFI targets Linux, Windows, macOS, and Android arm64. Each target uses its native dynamic loader and ABI, with Android using Bionic and `CGO_ENABLED=0`.
+FFI targets Linux, Windows, macOS, and Android arm64. Each target uses its native dynamic loader and ABI, with Android using Bionic and `CGO_ENABLED=0`. FFI is disabled by default; enable it for a command with `lunex ffi = on run <file.lx>`.
 
 ---
 
@@ -358,11 +361,11 @@ Check out [`examples/`](examples/) for runnable code covering everything from th
 - Hello World and basic I/O
 - Variables, destructuring, template strings
 - Structs and factory functions
-- Control flow: `if`, `while`, `each`, `guard`, `unless`, `watch`, `match`, `defer`
-- Standard library: math, crypto, fs, datetime, regex, os, http
+- Control flow: `if`, `while`, `each`, `guard`, `unless`, `watch`, `match`
+- Standard library: math, crypto, fs, datetime, os, HTTP, byte buffers, fixed-width integers
 - Higher-order functions: map, filter, reduce, compose, memoize
 - Concurrent workers with `spawn` and `channel`
-- WebSockets, HTTP servers, and REST APIs
+- HTTP servers and REST APIs
 
 ---
 

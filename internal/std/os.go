@@ -45,6 +45,9 @@ func OsModule() *rt.Value {
 	obj.ObjVal["exec"] = rt.FuncVal(&rt.Function{
 		Name: "exec",
 		Native: func(args []*rt.Value, this *rt.Value) (*rt.Value, error) {
+			if isWasmRuntime() {
+				return rt.Undefined, fmt.Errorf("os.exec does not exist")
+			}
 			if len(args) == 0 {
 				return rt.Null, nil
 			}
@@ -135,6 +138,9 @@ func OsModule() *rt.Value {
 	obj.ObjVal["spawn"] = rt.FuncVal(&rt.Function{
 		Name: "spawn",
 		Native: func(args []*rt.Value, this *rt.Value) (*rt.Value, error) {
+			if isWasmRuntime() {
+				return rt.Undefined, fmt.Errorf("os.spawn does not exist")
+			}
 			if len(args) == 0 {
 				return rt.Null, nil
 			}
@@ -305,6 +311,9 @@ func OsModule() *rt.Value {
 	obj.ObjVal["exit"] = rt.FuncVal(&rt.Function{
 		Name: "exit",
 		Native: func(args []*rt.Value, this *rt.Value) (*rt.Value, error) {
+			if isWasmRuntime() {
+				return rt.Undefined, fmt.Errorf("os.exit does not exist")
+			}
 			code := 0
 			if len(args) > 0 {
 				code = int(args[0].ToNumber())

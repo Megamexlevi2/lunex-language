@@ -335,6 +335,9 @@ func wsConnValue(c *wsConn) *runtime.Value {
 func WsModule() *runtime.Value {
 	return runtime.ObjectVal(map[string]*runtime.Value{
 		"createServer": runtime.FuncVal(&runtime.Function{Name: "createServer", Native: func(args []*runtime.Value, _ *runtime.Value) (*runtime.Value, error) {
+			if isWasmRuntime() {
+				return runtime.Null, fmt.Errorf("ws.createServer does not exist")
+			}
 			port := 8080
 			if len(args) > 0 {
 				port = int(args[0].ToNumber())
@@ -503,6 +506,9 @@ func WsModule() *runtime.Value {
 		}}),
 
 		"connect": runtime.FuncVal(&runtime.Function{Name: "connect", Native: func(args []*runtime.Value, _ *runtime.Value) (*runtime.Value, error) {
+			if isWasmRuntime() {
+				return runtime.Null, fmt.Errorf("ws.connect does not exist")
+			}
 			if len(args) == 0 {
 				return runtime.Null, fmt.Errorf("url required")
 			}

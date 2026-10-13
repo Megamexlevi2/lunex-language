@@ -8,12 +8,14 @@ import (
 )
 
 type Environment struct {
-	mu      sync.RWMutex
-	vars    map[string]*Value
-	consts  map[string]bool
-	parent  *Environment
-	escaped int32
-	slots   []*Value
+	mu        sync.RWMutex
+	vars      map[string]*Value
+	consts    map[string]bool
+	parent    *Environment
+	escaped   int32
+	slots     []*Value
+	slotNames []string
+	slotIndex map[string]int
 }
 
 var envPool = sync.Pool{
@@ -36,14 +38,29 @@ func NewEnvironment(parent *Environment) *Environment {
 	}
 	e.parent = parent
 	e.slots = nil
+	e.slotNames = nil
+	e.slotIndex = nil
 	atomic.StoreInt32(&e.escaped, 0)
 	return e
 }
 
-func NewResolvedEnvironment(parent *Environment, slotCount int) *Environment {
+func NewResolvedEnvironment(parent *Environment, slotCount int, names ...[]string) *Environment {
 	e := NewEnvironment(parent)
 	if slotCount > 0 {
 		e.slots = make([]*Value, slotCount)
+	}
+	if len(names) > 0 {
+		count := len(names[0])
+		if count > slotCount {
+			count = slotCount
+		}
+		e.slotNames = append([]string(nil), names[0][:count]...)
+		e.slotIndex = make(map[string]int, count)
+		for i, name := range e.slotNames {
+			if name != "" {
+				e.slotIndex[name] = i
+			}
+		}
 	}
 	return e
 }
@@ -63,6 +80,8 @@ func ReleaseEnvironment(e *Environment) {
 	}
 	e.parent = nil
 	e.slots = nil
+	e.slotNames = nil
+	e.slotIndex = nil
 	envPool.Put(e)
 }
 
@@ -82,6 +101,9 @@ func (e *Environment) isEscaped() bool {
 func (e *Environment) Define(name string, val *Value, isConst bool) {
 	if !e.isEscaped() {
 		e.vars[name] = val
+		if slot, ok := e.slotIndex[name]; ok && slot >= 0 && slot < len(e.slots) {
+			e.slots[slot] = val
+		}
 		if isConst {
 			e.consts[name] = true
 		}
@@ -89,6 +111,9 @@ func (e *Environment) Define(name string, val *Value, isConst bool) {
 	}
 	e.mu.Lock()
 	e.vars[name] = val
+	if slot, ok := e.slotIndex[name]; ok && slot >= 0 && slot < len(e.slots) {
+		e.slots[slot] = val
+	}
 	if isConst {
 		e.consts[name] = true
 	}

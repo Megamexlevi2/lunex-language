@@ -290,7 +290,7 @@ func verifyCode(p *Program, code []byte, label string) error {
 }
 
 func selfCheck(p *Program) error {
-	if !verifyNative || !Available() {
+	if p.FunctionMode || !verifyNative || !Available() {
 		return nil
 	}
 	if err := verifyCode(p, p.Code, "native"); err != nil {

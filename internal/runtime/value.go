@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 type ValueType int
@@ -48,29 +49,54 @@ var Undefined = &Value{Tag: TypeUndefined}
 var True = &Value{Tag: TypeBool, BoolVal: true}
 var False = &Value{Tag: TypeBool, BoolVal: false}
 
-const intPoolMin = -1024
-const intPoolMax = 65535
+const (
+	intPoolMin = -1024
+	intPoolMax = 65535
+	intHotMin  = -128
+	intHotMax  = 4096
+)
 
-var intPool [intPoolMax - intPoolMin + 1]*Value
+var intPool [intPoolMax - intPoolMin + 1]atomic.Pointer[Value]
+var intHotPool [intHotMax - intHotMin + 1]*Value
 
 func init() {
-	for i := intPoolMin; i <= intPoolMax; i++ {
-		intPool[i-intPoolMin] = &Value{Tag: TypeNumber, NumVal: float64(i)}
+	for i := intHotMin; i <= intHotMax; i++ {
+		intHotPool[i-intHotMin] = &Value{Tag: TypeNumber, NumVal: float64(i)}
 	}
 	initNumberBuiltins()
 }
 
+func pooledInteger(i int) *Value {
+	cell := &intPool[i-intPoolMin]
+	if value := cell.Load(); value != nil {
+		return value
+	}
+	value := &Value{Tag: TypeNumber, NumVal: float64(i)}
+	if cell.CompareAndSwap(nil, value) {
+		return value
+	}
+	return cell.Load()
+}
+
 func NumberVal(n float64) *Value {
 	i := int(n)
-	if float64(i) == n && i >= intPoolMin && i <= intPoolMax {
-		return intPool[i-intPoolMin]
+	if float64(i) == n {
+		if i >= intHotMin && i <= intHotMax {
+			return intHotPool[i-intHotMin]
+		}
+		if i >= intPoolMin && i <= intPoolMax {
+			return pooledInteger(i)
+		}
 	}
 	return &Value{Tag: TypeNumber, NumVal: n}
 }
 
 func NumberValInt(i int64) *Value {
+	if i >= intHotMin && i <= intHotMax {
+		return intHotPool[int(i)-intHotMin]
+	}
 	if i >= intPoolMin && i <= intPoolMax {
-		return intPool[i-intPoolMin]
+		return pooledInteger(int(i))
 	}
 	return &Value{Tag: TypeNumber, NumVal: float64(i)}
 }
@@ -492,7 +518,7 @@ type Function struct {
 	Body         interface{}
 	Env          *Environment
 	Native       func(args []*Value, this *Value) (*Value, error)
-	NativeTier      int
+	NativeTier   int
 	CallCount    int64
 	DefClass     *Class
 	IsArrow      bool

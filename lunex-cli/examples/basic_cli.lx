@@ -1,30 +1,30 @@
-val cli = @import("lunex-cli")
-val io = @import("std.io")
+//val cli = @import("lunex-cli")
+//val io = @import("std.io")
 
-fn setupCli() {
-  cli.name("demo")
-  cli.version("1.0.0")
-  cli.description("Demo CLI module")
-  cli.usage("demo <command> [options]")
-  cli.footer("Use 'demo help' for more information.")
-  cli.defaultCommand("help")
+//fn setupCli() {
+//  cli.name("demo")
+//  cli.version("1.0.0")
+//  cli.description("Demo CLI module")
+//  cli.usage("demo <command> [options]")
+//  cli.footer("Use 'demo help' for more information.")
+//  cli.defaultCommand("help")
 
-  cli.command("help", fn(args) {
-    io.log("Available commands: help, hello, sum")
-  }, "Show help")
+//  cli.command("help", fn(args) {
+//    io.log("Available commands: help, hello, sum")
+//  }, "Show help")
 
-  cli.command("hello", fn(args) {
-    io.log("Hello", args.get("name"))
-  }, "Say hello", ["hi"])
+//  cli.command("hello", fn(args) {
+//    io.log("Hello", args.get("name"))
+//  }, "Say hello", ["hi"])
 
-  cli.command("sum", fn(args) {
-    val a = args.get("a")
-    val b = args.get("b")
-    io.log("Result:", a + b)
-  }, "Add two values", ["add"])
-}
+//  cli.command("sum", fn(args) {
+//    val a = args.get("a")
+//    val b = args.get("b")
+//    io.log("Result:", a + b)
+//  }, "Add two values", ["add"])
+//}
 
-fn main() {
-  setupCli()
-  cli.run()
-}
+//fn main() {
+//  setupCli()
+//  cli.run()
+//}

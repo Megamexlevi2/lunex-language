@@ -61,7 +61,7 @@ func buildNAXHeader(payloadLen, entryCount, mainIndex uint32, digest [16]byte) [
 }
 
 func PackDirectory(dir string, outputFile string) error {
-	return PackDirectoryMode(dir, outputFile, false)
+	return PackDirectoryMode(dir, outputFile, true)
 }
 
 func PackDirectorySource(dir string, outputFile string) error {

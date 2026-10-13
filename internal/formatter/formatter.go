@@ -60,6 +60,8 @@ func (f *Formatter) printNode(n *ast.Node, topLevel bool) {
 		f.printIfStmt(n)
 	case ast.WhileStmt:
 		f.printWhileStmt(n)
+	case ast.WatchStmt:
+		f.printWatchStmt(n)
 	case ast.ForStmt:
 		f.printForStmt(n)
 	case ast.ForOfStmt, ast.EachInStmt:
@@ -246,6 +248,14 @@ func (f *Formatter) printElseChain(alt *ast.Node) {
 
 func (f *Formatter) printWhileStmt(n *ast.Node) {
 	f.writeLine(fmt.Sprintf("while %s {", f.expr(n.Test)))
+	f.indent++
+	f.printBlockBody(n.Body)
+	f.indent--
+	f.writeLine("}")
+}
+
+func (f *Formatter) printWatchStmt(n *ast.Node) {
+	f.writeLine("watch " + f.expr(n.Subject) + " {")
 	f.indent++
 	f.printBlockBody(n.Body)
 	f.indent--

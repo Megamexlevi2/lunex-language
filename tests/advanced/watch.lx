@@ -1,0 +1,17 @@
+val io = @import("std.io")
+var watched = 0
+var hits = 0
+
+fn main() {
+  watch watched {
+    hits = hits + 1
+  }
+  watched = 1
+  watched = 1
+  watched = 2
+  if hits == 2 {
+    io.log("PASS watch")
+  } else {
+    throw "FAIL watch: expected 2 hits, got " + hits
+  }
+}

@@ -223,7 +223,7 @@ hint: library "pkg-name" not found — add it to lunex.toml with:
 
 ## `.nax` File Format
 
-A `.nax` file is a custom binary container, not a zip or tar archive. Only the Lunex runtime can read it. In optimized mode it stores compiled `.nlo` objects and module metadata without storing the original source text.
+A `.nax` file is a custom binary container, not a zip or tar archive. Only the Lunex runtime can read it. It stores compiled `.nlo` objects and module metadata. Original source text is included by default for lossless recovery; `--no-source` omits it.
 
 The `.nlo` format is separate from the legacy `x102c` object format. It stores a validated compiled AST in binary form and does not contain the legacy NTZ bytecode section. Optimized NLO objects omit plaintext source and are lazily decoded by the NAX runtime. `lunex unpack` can reconstruct canonical `.lx` source from the stored AST.
 
@@ -326,6 +326,6 @@ lunex start
 
 The default `lunex pack` mode stores a validated, resolver-ready binary AST in an NLO object inside the NAX archive. NAX execution skips source reading, lexing, parsing, and resolution, uses lazy standard-library initialization, and avoids repeated top-level validation for trusted optimized objects. This reduces startup work compared with executing the same `.lx` file directly, without CGo and without adding a new execution backend. The runtime still uses the existing Go interpreter.
 
-The `--source` option preserves the original `.lx` files in the NAX archive for source-first recovery. Optimized NLO objects can also recover canonical Lunex source from their stored AST without embedding the original source text.
+Original `.lx` text is preserved in NAX entries by default, allowing `lunex unpack` to restore the source without formatting changes or lost syntax. The legacy `--source` option remains accepted. `--no-source` omits the source text; unpacking such an archive reconstructs canonical Lunex source from the stored AST and may not preserve comments or original formatting.
 
-`lunex pack <file.lx|directory>` uses the `.nlo` compiled-object representation by default. The default archive does not store source text and does not use the legacy `x102c` object format. Use `--source` to preserve source files. `lunex unpack` extracts the entries stored in either representation.
+`lunex pack <file.lx|directory>` uses the `.nlo` compiled-object representation and preserves source text by default. It does not use the legacy `x102c` object format. Use `--no-source` to omit original source files; this saves source text but can make unpacked files differ from the originals. `lunex unpack` extracts entries from either mode.

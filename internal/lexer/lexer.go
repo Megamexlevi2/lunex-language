@@ -44,7 +44,7 @@ var builtinKeywords = map[string]bool{
 	"nax": true, "lunex": true,
 	"spawn": true, "select": true, "channel": true, "component": true,
 	"macro": true, "immutable": true, "freeze": true,
-	"with": true, "using": true, "assert": true, "delete": true,
+	"with": true, "using": true, "assert": true, "delete": true, "watch": true,
 	"use": true, "struct": true,
 	"Not": true,
 }

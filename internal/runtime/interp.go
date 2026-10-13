@@ -26,30 +26,34 @@ type deferEntry struct {
 }
 
 type Interpreter struct {
-	globals       *Environment
-	topEnv        *Environment
-	profiler      *Profiler
-	modules       map[string]*Value
-	mu            sync.RWMutex
-	filename      string
-	sourceLines   []string
-	currentLine   int
-	currentCol    int
-	defers        []deferEntry
-	ntlLoader     NTLLoader
-	astLoader     NTLASTLoader
-	ntlFileLoader NTLFileLoader
-	naxLoader     NaxLoader
-	moduleLoader  func(string) (*Value, bool)
-	libLoadDepth  int32
-	callDepth     int
-	templateCache sync.Map
-	numCache      sync.Map
-	execSteps     int64
-	maxExecSteps  int64
-	spawnSlots    chan struct{}
-	jitMu         sync.Mutex
-	jitLoops      map[*ast.Node]*jitLoopState
+	globals           *Environment
+	topEnv            *Environment
+	profiler          *Profiler
+	modules           map[string]*Value
+	mu                sync.RWMutex
+	filename          string
+	sourceLines       []string
+	currentLine       int
+	currentCol        int
+	defers            []deferEntry
+	ntlLoader         NTLLoader
+	astLoader         NTLASTLoader
+	ntlFileLoader     NTLFileLoader
+	naxLoader         NaxLoader
+	moduleLoader      func(string) (*Value, bool)
+	libLoadDepth      int32
+	callDepth         int
+	templateCache     sync.Map
+	numCache          sync.Map
+	execSteps         int64
+	maxExecSteps      int64
+	spawnSlots        chan struct{}
+	jitMu             sync.Mutex
+	jitLoops          map[*ast.Node]*jitLoopState
+	jitFunctions      map[*Function]*jitFunctionState
+	jitFunctionFrames sync.Pool
+	watchMu           sync.Mutex
+	watchers          []*watcher
 }
 
 const defaultMaxExecSteps = 200_000_000
@@ -74,6 +78,8 @@ func NewInterpreter() *Interpreter {
 		maxExecSteps: resolveMaxExecSteps(),
 		spawnSlots:   make(chan struct{}, 256),
 		jitLoops:     make(map[*ast.Node]*jitLoopState),
+		jitFunctions: make(map[*Function]*jitFunctionState),
+		watchers:     make([]*watcher, 0),
 	}
 	interp.registerBuiltins()
 	CallFunction = func(fn *Value, args []*Value, this ...*Value) (*Value, error) {
@@ -81,7 +87,7 @@ func NewInterpreter() *Interpreter {
 		if len(this) > 0 {
 			t = this[0]
 		}
-		return interp.callFunctionValue(fn, args, t)
+		return interp.callFunctionValue(fn, normalizeCallbackArgs(fn, args), t)
 	}
 	return interp
 }

@@ -157,19 +157,21 @@ var helpPages = map[string]helpPage{
 	},
 	"pack": {
 		Name:    "pack",
-		Usage:   "lunex pack <file.lx|directory> [--source] [-o output.nax]",
+		Usage:   "lunex pack <file.lx|directory> [--no-source] [-o output.nax]",
 		Summary: "Validate and bundle Lunex source into a NAX archive.",
 		Sections: []helpSection{
 			{Title: "Input", Rows: []string{
 				"A single .lx file or a project/source directory can be packed.",
 			}},
 			{Title: "Options", Rows: []string{
-				"--source              Keep recoverable source information in the NAX archive.",
+				"--source              Preserve the original source text (the default).",
+				"--no-source           Omit original source text and recover code from the compiled AST.",
 				"-o, --output <path>   Choose the output archive path.",
 			}},
 			{Title: "Validation", Rows: []string{
 				"Lunex validates imports and compiler/checker invariants before writing the archive.",
-				"Use `lunex unpack` to recover source entries from an archive when source data is present.",
+				"Original source text is preserved by default, so unpack can restore files without rewriting their syntax.",
+				"Use `--no-source` only when you do not need exact source recovery.",
 			}},
 		},
 	},
@@ -180,7 +182,8 @@ var helpPages = map[string]helpPage{
 		Sections: []helpSection{
 			{Title: "Output", Rows: []string{
 				"The output directory is created beside the archive using the archive base name.",
-				"Only recoverable source entries can be restored from the archive.",
+				"Unpack refuses to write into an existing path to protect your project files.",
+				"Source text is preserved exactly unless the archive was packed with --no-source.",
 			}},
 		},
 	},

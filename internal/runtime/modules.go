@@ -26,14 +26,39 @@ func (interp *Interpreter) evalAtImport(node *ast.Node, env *Environment) (*Valu
 			return interp.loadLocalFile(localPath, node)
 		}
 
-		if interp.ntlFileLoader != nil {
-			if src, realPath, ok := interp.ntlFileLoader(path); ok && realPath != "" {
-				abs := realPath
-				if !filepath.IsAbs(abs) {
-					abs, _ = filepath.Abs(realPath)
-				}
-				return interp.evalModuleSourceFile(src, abs, abs)
+		if src, realPath, ok := interp.loadForceLocalFromLoader(path); ok {
+			cacheKey := realPath
+			if !filepath.IsAbs(cacheKey) {
+				cacheKey, _ = filepath.Abs(cacheKey)
 			}
+			interp.mu.RLock()
+			cached, cachedOK := interp.modules[cacheKey]
+			interp.mu.RUnlock()
+			if cachedOK {
+				return cached, nil
+			}
+			if strings.EqualFold(filepath.Ext(realPath), ".nax") || strings.EqualFold(filepath.Ext(path), ".nax") {
+				if interp.naxLoader == nil {
+					e := interp.runtimeError(errfmt.KindImport, "E0015",
+						fmt.Sprintf("cannot load %q: binary module loader is not available in this context", path), node, nil)
+					return nil, e
+				}
+				mod, err := interp.naxLoader(realPath)
+				if err != nil {
+					e := interp.runtimeError(errfmt.KindImport, "E0015",
+						fmt.Sprintf("failed to load binary module %q: %v", path, err), node, nil)
+					return nil, e
+				}
+				interp.mu.Lock()
+				interp.modules[cacheKey] = mod
+				interp.mu.Unlock()
+				return mod, nil
+			}
+			abs := realPath
+			if !filepath.IsAbs(abs) {
+				abs, _ = filepath.Abs(realPath)
+			}
+			return interp.evalModuleSourceFile(src, abs, abs)
 		}
 		if interp.astLoader != nil {
 			if tree, realPath, ok := interp.astLoader(path); ok {
@@ -151,6 +176,53 @@ func forceLocalImport(node *ast.Node) bool {
 		return strings.EqualFold(s, "force-local") || strings.EqualFold(s, "fimport")
 	}
 	return false
+}
+
+func (interp *Interpreter) loadForceLocalFromLoader(request string) (string, string, bool) {
+	if interp.ntlFileLoader == nil {
+		return "", "", false
+	}
+
+	bases := []string{request}
+	ext := strings.ToLower(filepath.Ext(request))
+	if ext != ".lx" && ext != ".nax" {
+		bases = append(bases, request+".lx", request+".nax")
+	}
+
+	candidates := make([]string, 0, len(bases)*2)
+	seen := make(map[string]struct{}, len(bases)*2)
+	for _, base := range bases {
+		if filepath.IsAbs(base) {
+			if _, ok := seen[base]; !ok {
+				candidates = append(candidates, base)
+				seen[base] = struct{}{}
+			}
+			continue
+		}
+		if interp.filename != "" {
+			local := filepath.Join(filepath.Dir(interp.filename), filepath.FromSlash(base))
+			if _, ok := seen[local]; !ok {
+				candidates = append(candidates, local)
+				seen[local] = struct{}{}
+			}
+		}
+		if _, ok := seen[base]; !ok {
+			candidates = append(candidates, base)
+			seen[base] = struct{}{}
+		}
+	}
+
+	for _, candidate := range candidates {
+		source, realPath, ok := interp.ntlFileLoader(candidate)
+		if !ok {
+			continue
+		}
+		if realPath == "" {
+			realPath = candidate
+		}
+		return source, realPath, true
+	}
+	return "", "", false
 }
 
 func (interp *Interpreter) loadModule(path string) (*Value, error) {

@@ -85,3 +85,65 @@ fn main() {
 		t.Fatalf("expected 2 watcher invocations, got %v", hits)
 	}
 }
+
+func TestWatchCompoundAssignment(t *testing.T) {
+	source := `
+var counter = 0
+var hits = 0
+
+fn main() {
+  watch counter {
+    hits = hits + 1
+  }
+
+  counter += 1
+  counter++
+  counter -= 1
+}
+`
+
+	interp := NewInterpreter()
+	tree := parseWatchTest(t, source)
+	if _, err := interp.Exec(tree); err != nil {
+		t.Fatal(err)
+	}
+	if err := interp.CallMain(); err != nil {
+		t.Fatal(err)
+	}
+	hits, ok := interp.topEnv.Get("hits")
+	if !ok || hits == nil || hits.NumVal != 3 {
+		t.Fatalf("expected 3 watcher invocations, got %v", hits)
+	}
+}
+
+func TestWatchMemberRootReplacement(t *testing.T) {
+	source := `
+var user = struct {
+  name = "Alice"
+}
+var hits = 0
+
+fn main() {
+  watch user.name {
+    hits = hits + 1
+  }
+
+  user = struct {
+    name = "Bob"
+  }
+}
+`
+
+	interp := NewInterpreter()
+	tree := parseWatchTest(t, source)
+	if _, err := interp.Exec(tree); err != nil {
+		t.Fatal(err)
+	}
+	if err := interp.CallMain(); err != nil {
+		t.Fatal(err)
+	}
+	hits, ok := interp.topEnv.Get("hits")
+	if !ok || hits == nil || hits.NumVal != 1 {
+		t.Fatalf("expected 1 watcher invocation, got %v", hits)
+	}
+}

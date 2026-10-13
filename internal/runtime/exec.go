@@ -17,6 +17,7 @@ func (interp *Interpreter) ExecTrusted(program *ast.Node) (*Value, error) {
 
 func (interp *Interpreter) execProgram(program *ast.Node, validateTopLevel bool) (*Value, error) {
 	interp.resetExecutionBudget()
+	interp.clearWatchers()
 	env := NewEnvironment(interp.globals)
 	interp.topEnv = env
 	for _, stmt := range program.Body_ {
@@ -260,7 +261,7 @@ func (interp *Interpreter) execNode(node *ast.Node, env *Environment) (*Value, e
 
 			return interp.execBlock(node.Body_, env)
 		}
-		childEnv := NewResolvedEnvironment(env, resolver.SlotCount(node.ScopeInfo))
+		childEnv := NewResolvedEnvironment(env, resolver.SlotCount(node.ScopeInfo), resolver.SlotNames(node.ScopeInfo))
 		result, err := interp.execBlock(node.Body_, childEnv)
 		ReleaseEnvironment(childEnv)
 		return result, err
@@ -308,6 +309,8 @@ func (interp *Interpreter) execNode(node *ast.Node, env *Environment) (*Value, e
 		return nil, &breakError{}
 	case ast.ContinueStmt:
 		return nil, &continueError{}
+	case ast.WatchStmt:
+		return interp.execWatch(node, env)
 	case ast.IfStmt:
 		return interp.execIf(node, env)
 	case ast.UnlessStmt:

@@ -92,6 +92,10 @@ func (r *resolver) resolveStmt(node *ast.Node, sc *scope) {
 		r.resolveExpr(node.Test, sc)
 		r.resolveStmt(node.Body, sc)
 
+	case ast.WatchStmt:
+		r.resolveExpr(node.Subject, sc)
+		r.resolveStmt(node.Body, sc)
+
 	case ast.ForStmt:
 
 		forScope := newScope(sc, node)
