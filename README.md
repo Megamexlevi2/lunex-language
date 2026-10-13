@@ -45,6 +45,16 @@ cmake -B build
 cmake --build build
 ```
 
+Try Lunex Online
+
+You can try the Lunex programming language directly in your browser without installing or building anything.
+
+<p align="center">
+  <a href="https://lunex-language.github.io/lunex/playground.html">
+    <img src="https://img.shields.io/badge/Open%20Lunex-Playground-6C5CE7?style=for-the-badge" alt="Open Lunex Playground">
+  </a>
+</p>
+
 ---
 
 ## Quick Start
