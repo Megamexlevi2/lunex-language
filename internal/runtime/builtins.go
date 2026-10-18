@@ -14,6 +14,25 @@ import (
 func (interp *Interpreter) registerBuiltins() {
 	g := interp.globals
 
+	g.Define("new", ObjectVal(map[string]*Value{
+		"task": FuncVal(&Function{Name: "task", Native: func(args []*Value, this *Value) (*Value, error) {
+			return interp.createTask(args)
+		}}),
+	}), false)
+	g.Define("parallel", ObjectVal(map[string]*Value{
+		"map": FuncVal(&Function{Name: "map", Native: func(args []*Value, this *Value) (*Value, error) {
+			return interp.parallelMap(args)
+		}}),
+	}), false)
+	g.Define("tasks", ObjectVal(map[string]*Value{
+		"all": FuncVal(&Function{Name: "all", Native: func(args []*Value, this *Value) (*Value, error) {
+			return interp.taskGroup(args, false)
+		}}),
+		"any": FuncVal(&Function{Name: "any", Native: func(args []*Value, this *Value) (*Value, error) {
+			return interp.taskGroup(args, true)
+		}}),
+	}), false)
+
 	g.Define("undefined", Undefined, false)
 	g.Define("null", Null, false)
 	g.Define("true", True, false)
@@ -345,14 +364,7 @@ func (interp *Interpreter) registerBuiltins() {
 			return nil, &throwError{val: args[0]}
 		}}),
 		"all": FuncVal(&Function{Name: "all", Native: func(args []*Value, this *Value) (*Value, error) {
-			if len(args) == 0 {
-				return ArrayVal(nil), nil
-			}
-			arr := args[0]
-			if arr.Tag != TypeArray {
-				return ArrayVal(nil), nil
-			}
-			return arr, nil
+			return interp.promiseAll(args)
 		}}),
 	}), false)
 

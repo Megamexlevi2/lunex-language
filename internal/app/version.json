@@ -1,12 +1,12 @@
 {
   "name": "Lunex Lang",
-  "version": "0.9.4",
+  "version": "0.9.5",
   "author": "David Dev",
   "github": "https://github.com/Megamexlevi2",
   "repository": "https://github.com/Megamexlevi2/lunex-language",
   "license": "Mozilla Public License Version 2.0",
   "year": "2026",
-  "buildDate": "2026-10-13",
+  "buildDate": "2026-10-17",
   "description": "Lunex is a fast, statically scoped scripting language for backend",
   "languages": [
     "Lunex",

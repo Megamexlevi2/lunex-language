@@ -24,6 +24,113 @@ func unary(op string, arg *ast.Node, prefix bool) *ast.Node {
 	return &ast.Node{Type: ast.UnaryExpr, Op: op, Arg: arg, Prefix: prefix}
 }
 
+func mathCall(name string, args ...*ast.Node) *ast.Node {
+	return &ast.Node{
+		Type: ast.CallExpr,
+		Callee: &ast.Node{
+			Type:   ast.MemberExpr,
+			Object: &ast.Node{Type: ast.Identifier, Name: "Math"},
+			Prop:   name,
+		},
+		Args: args,
+	}
+}
+
+func TestNativeMathJIT(t *testing.T) {
+	if !Available() || nativeMathAddress(MathSqrt) == 0 {
+		t.Skip("native math calls are unavailable on this platform")
+	}
+	cases := []struct {
+		name string
+		expr *ast.Node
+		want float64
+	}{
+		{"abs", mathCall("abs", number("-2.5")), 2.5},
+		{"ceil", mathCall("ceil", number("1.2")), 2},
+		{"floor", mathCall("floor", number("1.8")), 1},
+		{"round", mathCall("round", number("1.5")), 2},
+		{"sqrt", mathCall("sqrt", number("4")), 2},
+		{"sqrt_negative", mathCall("sqrt", number("-1")), math.NaN()},
+		{"cbrt", mathCall("cbrt", number("8")), 2},
+		{"sin", mathCall("sin", number("0.5")), math.Sin(0.5)},
+		{"cos", mathCall("cos", number("0.5")), math.Cos(0.5)},
+		{"tan", mathCall("tan", number("0.5")), math.Tan(0.5)},
+		{"asin", mathCall("asin", number("0.5")), math.Asin(0.5)},
+		{"acos", mathCall("acos", number("0.5")), math.Acos(0.5)},
+		{"atan", mathCall("atan", number("0.5")), math.Atan(0.5)},
+		{"atan2", mathCall("atan2", number("1"), number("2")), math.Atan2(1, 2)},
+		{"pow", mathCall("pow", number("2"), number("4")), 16},
+		{"log", mathCall("log", number("2.718281828459045")), 1},
+		{"log2", mathCall("log2", number("8")), 3},
+		{"log10", mathCall("log10", number("100")), 2},
+		{"exp", mathCall("exp", number("1")), math.E},
+		{"trunc", mathCall("trunc", number("-1.5")), -1},
+		{"hypot_compatibility", mathCall("hypot", number("-3")), 3},
+		{"power_operator", binary("**", number("2"), number("4")), 16},
+		{"max", mathCall("max", number("2"), number("5"), number("3")), 5},
+		{"min", mathCall("min", number("2"), number("-5"), number("3")), -5},
+		{"max_no_args", mathCall("max"), math.Inf(-1)},
+		{"min_no_args", mathCall("min"), math.Inf(1)},
+		{"max_one_arg", mathCall("max", number("3")), 3},
+		{"min_one_arg", mathCall("min", number("3")), 3},
+		{"max_first_nan", mathCall("max", mathCall("sqrt", number("-1")), number("3")), math.NaN()},
+		{"max_second_nan", mathCall("max", number("3"), mathCall("sqrt", number("-1"))), 3},
+		{"min_first_nan", mathCall("min", mathCall("sqrt", number("-1")), number("3")), math.NaN()},
+		{"min_second_nan", mathCall("min", number("3"), mathCall("sqrt", number("-1"))), 3},
+		{"sign_negative", mathCall("sign", number("-2")), -1},
+		{"sign_positive", mathCall("sign", number("2")), 1},
+		{"sign_zero", mathCall("sign", number("0")), 0},
+		{"constant_pi", &ast.Node{Type: ast.MemberExpr, Object: &ast.Node{Type: ast.Identifier, Name: "Math"}, Prop: "PI"}, math.Pi},
+		{"constant_e", &ast.Node{Type: ast.MemberExpr, Object: &ast.Node{Type: ast.Identifier, Name: "Math"}, Prop: "E"}, math.E},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			loop := whileLoop(binary("==", ident(0, "i"), number("0")), block(
+				expr(assign("=", ident(0, "i"), number("1"))),
+				expr(assign("=", ident(1, "result"), tc.expr)),
+			))
+			p, err := CompileLoop(loop, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer p.Close()
+			ctx := p.NewContext()
+			ctx.Budget = -1
+			ctx.Slots[0] = 0
+			if err := p.Run(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if ctx.Status != StatusOK {
+				t.Fatalf("status=%d", ctx.Status)
+			}
+			if !sameFloat(ctx.Slots[1], tc.want, true) {
+				t.Fatalf("got=%v want=%v", ctx.Slots[1], tc.want)
+			}
+		})
+	}
+}
+
+func TestNativeMathDoesNotAddMissingGlobalFunctions(t *testing.T) {
+	for _, name := range []string{"random", "imul"} {
+		call := mathCall(name, number("2"), number("3"))
+		loop := whileLoop(binary("==", ident(0, "i"), number("0")), block(expr(assign("=", ident(0, "i"), call))))
+		if program, err := CompileLoop(loop, 1); err == nil {
+			_ = program.Close()
+			t.Errorf("native math JIT accepted unsupported global Math.%s", name)
+		}
+	}
+}
+
+func TestNativeMathDoesNotCompileLocalShadow(t *testing.T) {
+	call := mathCall("sqrt", number("4"))
+	call.Callee.Object.ResolvedAddr = &ast.ResolvedAddr{Hops: 0, Slot: 1}
+	loop := whileLoop(binary("==", ident(0, "i"), number("0")), block(expr(assign("=", ident(0, "i"), call))))
+	if program, err := CompileLoop(loop, 1); err == nil {
+		_ = program.Close()
+		t.Fatal("native math JIT accepted a locally shadowed Math binding")
+	}
+}
+
 func runLoopTest(t *testing.T, loop *ast.Node, slot int, initial float64, want float64, tier int) {
 	t.Helper()
 	p, err := CompileLoop(loop, tier)

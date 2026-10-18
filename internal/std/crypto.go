@@ -414,45 +414,6 @@ func CryptoModule() *runtime.Value {
 			return runtime.StringVal(string(b)), nil
 		}}),
 
-		"base64Encode": runtime.FuncVal(&runtime.Function{Name: "base64Encode", Native: func(args []*runtime.Value, _ *runtime.Value) (*runtime.Value, error) {
-			if len(args) == 0 {
-				return runtime.StringVal(""), nil
-			}
-			return runtime.StringVal(base64.StdEncoding.EncodeToString([]byte(args[0].ToString()))), nil
-		}}),
-
-		"base64Decode": runtime.FuncVal(&runtime.Function{Name: "base64Decode", Native: func(args []*runtime.Value, _ *runtime.Value) (*runtime.Value, error) {
-			if len(args) == 0 {
-				return runtime.StringVal(""), nil
-			}
-			b, err := base64.StdEncoding.DecodeString(args[0].ToString())
-			if err != nil {
-				b, err = base64.RawStdEncoding.DecodeString(args[0].ToString())
-				if err != nil {
-					return runtime.StringVal(""), nil
-				}
-			}
-			return runtime.StringVal(string(b)), nil
-		}}),
-
-		"base64UrlEncode": runtime.FuncVal(&runtime.Function{Name: "base64UrlEncode", Native: func(args []*runtime.Value, _ *runtime.Value) (*runtime.Value, error) {
-			if len(args) == 0 {
-				return runtime.StringVal(""), nil
-			}
-			return runtime.StringVal(base64.RawURLEncoding.EncodeToString([]byte(args[0].ToString()))), nil
-		}}),
-
-		"base64UrlDecode": runtime.FuncVal(&runtime.Function{Name: "base64UrlDecode", Native: func(args []*runtime.Value, _ *runtime.Value) (*runtime.Value, error) {
-			if len(args) == 0 {
-				return runtime.StringVal(""), nil
-			}
-			b, err := base64.RawURLEncoding.DecodeString(args[0].ToString())
-			if err != nil {
-				return runtime.StringVal(""), nil
-			}
-			return runtime.StringVal(string(b)), nil
-		}}),
-
 		"pbkdf2": runtime.FuncVal(&runtime.Function{Name: "pbkdf2", Native: func(args []*runtime.Value, _ *runtime.Value) (*runtime.Value, error) {
 			if len(args) < 2 {
 				return runtime.StringVal(""), nil

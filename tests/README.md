@@ -1,6 +1,6 @@
 # Lunex Test Suite
 
-141 categorized tests covering the major language and standard library features.
+143 categorized tests covering the major language and standard library features. The test runner also executes the two task examples.
 
 ## Running all tests
 
@@ -40,10 +40,10 @@ lunex run tests/variables/01_val_basic.lx
 | `stdlib/ints/` | 4 | Integer and bitwise operations |
 | `stdlib/buffer/` | 4 | Buffer creation, conversion, slicing, and operations |
 | `stdlib/http/` | 7 | Server basics, router matching, limits and timeouts, static files, URL and cookie helpers |
-| `concurrency/` | 5 | Basic channel, fan-out, pipeline, worker pool, collect |
+| `concurrency/` | 7 | Background tasks, numeric and object mapping, task workers, ordered task groups, empty-input behavior, nested tasks, lifecycle state and cancellation |
 | `advanced/` | 10 | Closures, data pipeline, observer, retry/backoff, lazy eval, middleware, event loop, runtime introspection, comprehensive |
 
-**Total: 141 categorized tests**
+**Total: 143 categorized tests, plus two task example smoke tests**
 
 ## Test file naming
 

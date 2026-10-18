@@ -46,7 +46,7 @@ func isHardReservedKeyword(name string) bool {
 		"match", "case", "try", "catch", "finally", "raise", "throw",
 		"return", "true", "false", "null", "void", "undefined",
 		"new", "this", "super", "extends", "typeof", "instanceof",
-		"import", "export", "require", "spawn", "select", "channel",
+		"import", "export", "require", "select",
 		"macro", "immutable", "freeze", "with", "using", "assert",
 		"delete", "use", "struct", "defer", "guard", "loop",
 		"repeat", "when", "nax", "lunex", "sleep", "range",
@@ -309,9 +309,6 @@ func (p *Parser) parseStmt() (*ast.Node, error) {
 		case "return":
 			p.advance()
 			return nil, p.errorf(t, "Lunex does not use 'return' — the last expression in a function is its result automatically\n  hint: remove 'return' and leave the value as the final expression")
-		case "class":
-			p.advance()
-			return nil, p.errorf(t, "Lunex does not support 'class' — use 'val TypeName = struct { ... }' instead\n  hint: struct groups fields and functions into a named value")
 		}
 	}
 	if t.Type == lexer.KEYWORD {
@@ -368,8 +365,6 @@ func (p *Parser) parseStmt() (*ast.Node, error) {
 			return p.parseGuard()
 		case "defer":
 			return p.parseDefer()
-		case "spawn":
-			return p.parseSpawn()
 		case "select":
 			return p.parseSelect()
 		case "immutable":
@@ -653,112 +648,6 @@ func (p *Parser) parseFnParams() ([]*ast.Param, error) {
 		return nil, err
 	}
 	return params, nil
-}
-
-func (p *Parser) parseClassDecl() (*ast.Node, error) {
-	t := p.advance()
-	node := &ast.Node{Type: ast.ClassDecl, Line: t.Line, Col: t.Col}
-	if p.checkTok(lexer.IDENTIFIER) {
-		node.Name = p.advance().StrVal()
-	}
-	if p.eatIf(lexer.KEYWORD, "extends") {
-		super, err := p.parsePrimary()
-		if err != nil {
-			return nil, err
-		}
-		node.SuperClass = super
-	}
-	if p.eatIf(lexer.KEYWORD, "implements") {
-		for !p.check(lexer.PUNCTUATION, "{") && !p.check(lexer.EOF, "") {
-			p.advance()
-			p.eatIf(lexer.PUNCTUATION, ",")
-		}
-	}
-	if _, err := p.eat(lexer.PUNCTUATION, "{"); err != nil {
-		return nil, err
-	}
-	for !p.check(lexer.PUNCTUATION, "}") && !p.check(lexer.EOF, "") {
-		p.eatSemi()
-		if p.check(lexer.PUNCTUATION, "}") {
-			break
-		}
-		member, err := p.parseClassMember()
-		if err != nil {
-			return nil, err
-		}
-		if member != nil {
-			node.Methods = append(node.Methods, member)
-		}
-	}
-	p.eat(lexer.PUNCTUATION, "}")
-	return node, nil
-}
-
-func (p *Parser) parseClassMember() (*ast.ClassMember, error) {
-	m := &ast.ClassMember{}
-	if p.eatIf(lexer.OPERATOR, "@") {
-		for !p.checkTok(lexer.IDENTIFIER) && !p.checkKw("fn") && !p.checkKw("static") {
-			p.advance()
-		}
-	}
-	if p.eatIf(lexer.KEYWORD, "static") {
-		m.IsStatic = true
-	}
-	if p.eatIf(lexer.KEYWORD, "private") {
-		m.IsPrivate = true
-	}
-	if p.eatIf(lexer.KEYWORD, "public") || p.eatIf(lexer.KEYWORD, "protected") || p.eatIf(lexer.KEYWORD, "readonly") {
-	}
-	isGet := p.checkKw("get") && p.peek(1).Type == lexer.IDENTIFIER
-	isSet := p.checkKw("set") && p.peek(1).Type == lexer.IDENTIFIER
-	if isGet || isSet {
-		m.IsGet = isGet
-		m.IsSet = isSet
-		p.advance()
-	}
-	if p.eatIf(lexer.KEYWORD, "fn") {
-	}
-	p.eatIf(lexer.OPERATOR, "*")
-
-	nameTok := p.current()
-	m.Name = nameTok.StrVal()
-	p.advance()
-
-	if p.eatIf(lexer.OPERATOR, ":") {
-		m.TypeAnn = p.skipTypeExpr()
-	}
-	if p.eatIf(lexer.OPERATOR, "=") {
-		init, err := p.parseExpr()
-		if err != nil {
-			return nil, err
-		}
-		m.Init = init
-		p.eatSemi()
-		m.Kind = "field"
-		return m, nil
-	}
-
-	if !p.check(lexer.PUNCTUATION, "(") {
-		p.eatSemi()
-		m.Kind = "field"
-		return m, nil
-	}
-
-	params, err := p.parseFnParams()
-	if err != nil {
-		return nil, err
-	}
-	m.Params = params
-	if p.eatIf(lexer.OPERATOR, "->") || p.eatIf(lexer.OPERATOR, ":") {
-		m.TypeAnn = p.skipTypeExpr()
-	}
-	body, err := p.parseBlock()
-	if err != nil {
-		return nil, err
-	}
-	m.Body = body
-	m.Kind = "method"
-	return m, nil
 }
 
 func (p *Parser) parseEnumDecl() (*ast.Node, error) {
@@ -1476,16 +1365,6 @@ func (p *Parser) parseDefer() (*ast.Node, error) {
 	return &ast.Node{Type: ast.DeferStmt, Body: body, Line: t.Line, Col: t.Col}, nil
 }
 
-func (p *Parser) parseSpawn() (*ast.Node, error) {
-	t := p.advance()
-	expr, err := p.parseExpr()
-	if err != nil {
-		return nil, err
-	}
-	p.eatSemi()
-	return &ast.Node{Type: ast.SpawnStmt, Expr: expr, Line: t.Line, Col: t.Col}, nil
-}
-
 func (p *Parser) parseSelect() (*ast.Node, error) {
 	t := p.advance()
 	p.eat(lexer.PUNCTUATION, "{")
@@ -1505,7 +1384,7 @@ func (p *Parser) parseSelect() (*ast.Node, error) {
 		if err != nil {
 			return nil, err
 		}
-		sc.Channel = ch
+		sc.Expr = ch
 		p.eat(lexer.OPERATOR, "=>")
 		body, err := p.parseExprAsBlock()
 		if err != nil {
@@ -2376,11 +2255,6 @@ func (p *Parser) parsePrimary() (*ast.Node, error) {
 				return nil, err
 			}
 			return &ast.Node{Type: ast.TypeofExpr, Arg: arg, Line: t.Line, Col: t.Col}, nil
-		case "channel":
-			p.advance()
-			p.eatIf(lexer.PUNCTUATION, "(")
-			p.eatIf(lexer.PUNCTUATION, ")")
-			return &ast.Node{Type: ast.ChannelExpr, Line: t.Line, Col: t.Col}, nil
 		case "match":
 			return p.parseMatch()
 		case "nax":
@@ -2400,7 +2274,7 @@ func (p *Parser) parsePrimary() (*ast.Node, error) {
 			"readonly", "interface", "implements", "trait",
 			"satisfies", "alias", "enum",
 			"require", "export", "import",
-			"spawn", "select", "do", "using", "with",
+			"select", "do", "using", "with",
 			"delete", "guard", "defer":
 			p.advance()
 			return &ast.Node{Type: ast.Identifier, Name: t.StrVal(), Line: t.Line, Col: t.Col}, nil
@@ -2592,6 +2466,19 @@ func (p *Parser) parseFnExpr() (*ast.Node, error) {
 
 func (p *Parser) parseNew() (*ast.Node, error) {
 	t := p.advance()
+	if p.check(lexer.PUNCTUATION, ".") && p.peek(1).StrVal() == "task" {
+		p.advance()
+		p.advance()
+		if _, err := p.eat(lexer.PUNCTUATION, "("); err != nil {
+			return nil, err
+		}
+		args, err := p.parseArgList()
+		if err != nil {
+			return nil, err
+		}
+		callee := &ast.Node{Type: ast.MemberExpr, Object: &ast.Node{Type: ast.Identifier, Name: "new", Line: t.Line, Col: t.Col}, Prop: "task", Line: t.Line, Col: t.Col}
+		return &ast.Node{Type: ast.CallExpr, Callee: callee, Args: args, Line: t.Line, Col: t.Col}, nil
+	}
 	callee, err := p.parsePrimary()
 	if err != nil {
 		return nil, err

@@ -11,7 +11,7 @@ func (r *resolver) resolveExpr(node *ast.Node, sc *scope) {
 		r.resolveIdentifierRef(node, sc)
 
 	case ast.NumberLit, ast.StringLit, ast.BoolLit, ast.NullLit,
-		ast.UndefinedLit, ast.RegexLit, ast.ChannelExpr, ast.NaxImportExpr:
+		ast.UndefinedLit, ast.RegexLit, ast.NaxImportExpr:
 
 	case ast.TemplateLit:
 

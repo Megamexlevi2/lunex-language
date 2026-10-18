@@ -4,6 +4,7 @@ package jit
 
 import (
 	"fmt"
+	"math"
 )
 
 const (
@@ -287,6 +288,91 @@ func (w *a64Writer) callSelf(program *Program, in Instruction, returnLabel int) 
 	return nil
 }
 
+func (w *a64Writer) emitMathSign(newLocal func() int) {
+	zero := newLocal()
+	positive := newLocal()
+	negative := newLocal()
+	done := newLocal()
+	w.u32(ldrD(fp0, regStack, -8))
+	w.u32(fmovDX(fp1, 31))
+	w.u32(fcmpD(fp0, fp1))
+	w.branchCond(6, zero)
+	w.branchCond(12, positive)
+	w.branchCond(11, negative)
+	w.branch(zero)
+	w.mark(positive)
+	w.movImm64(regA, math.Float64bits(1))
+	w.u32(fmovDX(fp0, regA))
+	w.branch(done)
+	w.mark(negative)
+	w.movImm64(regA, math.Float64bits(-1))
+	w.u32(fmovDX(fp0, regA))
+	w.branch(done)
+	w.mark(zero)
+	w.u32(fmovDX(fp0, 31))
+	w.mark(done)
+	w.u32(strD(fp0, regStack, -8))
+}
+
+func (w *a64Writer) emitMathMinMax(id int, newLocal func() int) {
+	keepLeft := newLocal()
+	chooseRight := newLocal()
+	done := newLocal()
+	w.u32(ldrD(fp0, regStack, -16))
+	w.u32(ldrD(fp1, regStack, -8))
+	w.u32(fcmpD(fp1, fp0))
+	w.branchCond(6, keepLeft)
+	if id == MathMax {
+		w.branchCond(12, chooseRight)
+	} else {
+		w.branchCond(11, chooseRight)
+	}
+	w.mark(keepLeft)
+	w.u32(strD(fp0, regStack, -16))
+	w.branch(done)
+	w.mark(chooseRight)
+	w.u32(strD(fp1, regStack, -16))
+	w.mark(done)
+	w.u32(subImm64(regStack, regStack, 8))
+}
+
+func (w *a64Writer) emitNativeMath(in Instruction, newLocal func() int) error {
+	if in.A == MathSign {
+		w.emitMathSign(newLocal)
+		return nil
+	}
+	if in.A == MathMax || in.A == MathMin {
+		w.emitMathMinMax(in.A, newLocal)
+		return nil
+	}
+	address := nativeMathAddress(in.A)
+	if address == 0 {
+		return fmt.Errorf("native math symbol for operation %d is unavailable", in.A)
+	}
+	arity := mathFunctionArity(in.A)
+	if arity == 1 {
+		w.u32(ldrD(fp0, regStack, -8))
+	} else if arity == 2 {
+		w.u32(ldrD(fp0, regStack, -16))
+		w.u32(ldrD(fp1, regStack, -8))
+	} else {
+		return fmt.Errorf("unsupported native math arity for operation %d", in.A)
+	}
+	w.u32(stpXPre(regCtx, regStack))
+	w.u32(stpXPre(30, 31))
+	w.movImm64(16, uint64(address))
+	w.u32(0xD63F0200)
+	w.u32(ldpXPost(30, 31))
+	w.u32(ldpXPost(regCtx, regStack))
+	if arity == 2 {
+		w.u32(strD(fp0, regStack, -16))
+		w.u32(subImm64(regStack, regStack, 8))
+	} else {
+		w.u32(strD(fp0, regStack, -8))
+	}
+	return nil
+}
+
 func emitMachineLegacy(p *Program) ([]byte, error) {
 	w := &a64Writer{labels: make(map[int]int)}
 	labelAt := make(map[int][]int)
@@ -415,6 +501,10 @@ func emitMachineLegacy(p *Program) ([]byte, error) {
 			w.u32(ldrD(fp0, regStack, -8))
 			w.u32(fnegD(fp0, fp0))
 			w.u32(strD(fp0, regStack, -8))
+		case OpMath:
+			if err := w.emitNativeMath(in, newLocal); err != nil {
+				return fail(i, err)
+			}
 		case OpCompare:
 			w.u32(subImm64(regStack, regStack, 8))
 			w.u32(ldrD(fp1, regStack, 0))

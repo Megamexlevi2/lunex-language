@@ -32,58 +32,61 @@ func (interp *Interpreter) evalNew(node *ast.Node, env *Environment) (*Value, er
 }
 
 func (interp *Interpreter) callClass(cls *Class, args []*Value, outerEnv *Environment) (*Value, error) {
-	inst := NewInstance(cls)
-	instVal := InstVal(inst)
-
+	instVal := InstVal(NewInstance(cls))
+	if err := interp.initializeClassFields(cls, instVal); err != nil {
+		return nil, err
+	}
 	if initFn, ok := cls.Methods["constructor"]; ok {
-		fnEnv := NewEnvironment(initFn.Env)
-		fnEnv.Define("this", instVal, false)
-		if cls.Super != nil {
-			fnEnv.Define("__super_class__", ClassVal(cls.Super), false)
-		}
-		err := interp.bindParams(initFn.Params, args, fnEnv)
-		if err != nil {
+		if _, err := interp.callFunctionValue(FuncVal(initFn), args, instVal); err != nil {
 			return nil, err
 		}
-		bodyNode, ok := initFn.Body.(*ast.Node)
-		if ok {
-			for _, stmt := range bodyNode.Body_ {
-				_, e := interp.execNode(stmt, fnEnv)
-				if e != nil {
-					if _, ok := e.(*returnError); ok {
-						break
-					}
-					return nil, e
-				}
-			}
+	} else if cls.Super != nil {
+		if _, err := interp.runConstructorWithThis(cls.Super, args, instVal, outerEnv); err != nil {
+			return nil, err
 		}
 	}
 	return instVal, nil
 }
 
-func (interp *Interpreter) runConstructorWithThis(cls *Class, args []*Value, thisVal *Value, outerEnv *Environment) (*Value, error) {
-	if initFn, ok := cls.Methods["constructor"]; ok {
-		fnEnv := NewEnvironment(initFn.Env)
-		fnEnv.Define("this", thisVal, false)
-		if cls.Super != nil {
-			fnEnv.Define("__super_class__", ClassVal(cls.Super), false)
+func (interp *Interpreter) initializeClassFields(cls *Class, instVal *Value) error {
+	if cls == nil || instVal == nil || instVal.Tag != TypeInstance {
+		return nil
+	}
+	if cls.Super != nil {
+		if err := interp.initializeClassFields(cls.Super, instVal); err != nil {
+			return err
 		}
-		err := interp.bindParams(initFn.Params, args, fnEnv)
-		if err != nil {
-			return nil, err
+	}
+	for _, field := range cls.Fields {
+		if field == nil || field.Name == "" {
+			continue
 		}
-		bodyNode, ok := initFn.Body.(*ast.Node)
-		if ok {
-			for _, stmt := range bodyNode.Body_ {
-				_, e := interp.execNode(stmt, fnEnv)
-				if e != nil {
-					if _, ok := e.(*returnError); ok {
-						break
-					}
-					return nil, e
-				}
+		value := Undefined
+		if field.Init != nil {
+			fieldEnv := NewEnvironment(field.Env)
+			fieldEnv.Define("this", instVal, false)
+			var err error
+			value, err = interp.evalExpr(field.Init, fieldEnv)
+			ReleaseEnvironment(fieldEnv)
+			if err != nil {
+				return err
 			}
 		}
+		instVal.InstVal.Set(field.Name, value)
+	}
+	return nil
+}
+
+func (interp *Interpreter) runConstructorWithThis(cls *Class, args []*Value, thisVal *Value, outerEnv *Environment) (*Value, error) {
+	if cls == nil {
+		return thisVal, nil
+	}
+	if initFn, ok := cls.Methods["constructor"]; ok {
+		if _, err := interp.callFunctionValue(FuncVal(initFn), args, thisVal); err != nil {
+			return nil, err
+		}
+	} else if cls.Super != nil {
+		return interp.runConstructorWithThis(cls.Super, args, thisVal, outerEnv)
 	}
 	return thisVal, nil
 }

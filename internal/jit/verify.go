@@ -102,6 +102,17 @@ func oracleRun(p *Program, ctx *Context) (res oracleResult, ok bool) {
 			push(math.Mod(a, b))
 		case OpNeg:
 			stack[len(stack)-1] = -stack[len(stack)-1]
+		case OpMath:
+			arity := mathFunctionArity(in.A)
+			if arity == 1 {
+				push(nativeMathValue(in.A, pop(), 0))
+			} else if arity == 2 {
+				b := pop()
+				a := pop()
+				push(nativeMathValue(in.A, a, b))
+			} else {
+				return r, false
+			}
 		case OpCompare:
 			b := pop()
 			a := pop()
@@ -250,7 +261,7 @@ func runMachine(code []byte, ctx *Context) error {
 }
 
 func verifyCode(p *Program, code []byte, label string) error {
-	tolerant := hasOp(p, OpMod)
+	tolerant := hasOp(p, OpMod) || hasOp(p, OpMath)
 	budgets := [2]int64{600, 41}
 	for seed := 0; seed < probeSeeds; seed++ {
 		for _, budget := range budgets {

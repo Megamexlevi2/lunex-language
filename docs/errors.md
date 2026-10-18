@@ -143,11 +143,11 @@ specific E1000-series codes above instead.
 | E0076 | `'<word>' is a reserved keyword` (as a parameter)            | A reserved keyword can't be used as a parameter name              |
 | E0077 | `'<word>' is a reserved keyword` (as a field)                  | A reserved keyword can't be used as a struct field name              |
 
-### Encoding errors (E0067)
+### JSON input errors (E0067)
 
-| Code  | Message you'll see                                | Cause                                        |
-|-------|---------------------------------------------------------|------------------------------------------------|
-| E0067 | `invalid JSON value: <text>` / `invalid JSON string: ...` | Malformed input to `std.json` parsing              |
+| Code  | Message you'll see | Cause |
+|-------|--------------------|-------|
+| E0067 | `invalid JSON value: <text>` / `invalid JSON string: ...` | A runtime JSON value or string does not match the accepted JSON syntax. |
 
 ### Entry point and top-level errors (E0070–E0072)
 
@@ -215,6 +215,29 @@ key is known, the runtime message identifies it directly, for example
 Use `env.get(key, default)` when a missing variable is expected. Use
 `env.config(path)` when the caller needs the parsed object and a structured file
 error instead of a boolean result.
+
+## Standard-library module errors
+
+Standard-library modules may return a structured error object, throw a coded error, or propagate an operating-system/runtime error. The code depends on the operation; not every module converts every failure into a module-specific code.
+
+| Code | Module or operation | Meaning and typical cause |
+|---|---|---|
+| E0063 | `std.fs`, `std.os`, `std.json` file helpers, and other I/O calls | A file, stream, or other I/O operation failed. Check the path, access mode, and operating-system error text. |
+| E0064 | OS-backed operations | The operating system denied access to the requested resource. |
+| E0065 | Time-limited operations | The operation exceeded its configured deadline. |
+| E0066 | Network operations such as `std.http` | A connection or network operation failed. |
+| E0067 | Runtime JSON value parsing | A JSON value or string does not match the accepted syntax. `std.json.parse` uses E0113 for its module-specific parser diagnostics. |
+| E0110 | `std.env.require(key)` | The required environment variable does not exist. Use `env.get(key, fallback)` when absence is expected. |
+| E0111 | `std.env.config(path)` | The dotenv file could not be loaded or its values could not be applied. `config` returns an object with `parsed` and an `error` field when it fails. |
+| E0113 | `std.json.parse(text)` | The JSON text is malformed. The error includes the parser's location information when available. |
+| E0114 | `std.json.stringify(value)` | A circular structure cannot be serialized as JSON. |
+| E0115 | `std.json.readFile(path)` / `writeFile(path, value)` | A JSON file operation failed. Check path and permissions. |
+| E0116 | `std.json` parse/stringify | The value exceeded the module's supported nesting depth. |
+| E0140 | `std.encoding` | Invalid encoded data or options, including malformed Base64/Base32, bad percent escapes, unsupported encoding names or endianness, malformed UTF code units in strict mode, invalid byte-array values, or a Latin-1 character that cannot be represented. |
+
+`std.encoding` errors carry the code `E0140` and a message identifying the validation failure. The UTF-8, UTF-16, and UTF-32 decode functions support `fatal=true` to reject malformed Unicode rather than substitute U+FFFD where substitution is available. Input lengths that are not divisible by the UTF-16 or UTF-32 code-unit size are always rejected.
+
+Other standard-library calls can propagate runtime or operating-system errors instead of a dedicated module code. Their concrete message should be read alongside the module function being called; do not assume that every failure from a module maps to one unique `E####` value.
 
 ## NAX packing errors (E0112)
 

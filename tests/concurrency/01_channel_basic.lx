@@ -1,8 +1,0 @@
-
-val io = @import("std.io")
-fn main() {
-  val ch = channel()
-  spawn fn() { ch.send("hello from spawn") }()
-  io.log("received:", ch.recv())
-  io.log("PASS channel_basic")
-}

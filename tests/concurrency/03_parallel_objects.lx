@@ -1,0 +1,33 @@
+val io = @import("std.io")
+
+fn enrich(item) {
+  struct {
+    name = item.name
+    score = item.score * 2
+  }
+}
+
+fn main() {
+  val input = struct {
+    name = "Lunex"
+    score = 21
+  }
+  val task = new.task(enrich, input)
+  val result = task.await()
+  if result.name != "Lunex" { throw "interpreted object task returned an incorrect name" }
+  if result.score != 42 { throw "interpreted object task returned an incorrect score" }
+
+  val alpha = struct {
+    name = "alpha"
+    score = 2
+  }
+  val beta = struct {
+    name = "beta"
+    score = 3
+  }
+  val mapped = parallel.map(enrich, [alpha, beta])
+  if mapped.length != 2 { throw "parallel.map must return two object results" }
+  if mapped[0].name != "alpha" || mapped[0].score != 4 { throw "parallel.map returned an incorrect first object" }
+  if mapped[1].name != "beta" || mapped[1].score != 6 { throw "parallel.map returned an incorrect second object" }
+  io.log("PASS parallel_objects")
+}

@@ -28,6 +28,8 @@ type deferEntry struct {
 type Interpreter struct {
 	globals           *Environment
 	topEnv            *Environment
+	nativeMathObject  *Value
+	nativeMathMembers map[string]*Value
 	profiler          *Profiler
 	modules           map[string]*Value
 	mu                sync.RWMutex
@@ -45,9 +47,9 @@ type Interpreter struct {
 	callDepth         int
 	templateCache     sync.Map
 	numCache          sync.Map
+	scopeCache        sync.Map
 	execSteps         int64
 	maxExecSteps      int64
-	spawnSlots        chan struct{}
 	jitMu             sync.Mutex
 	jitLoops          map[*ast.Node]*jitLoopState
 	jitFunctions      map[*Function]*jitFunctionState
@@ -70,18 +72,49 @@ func resolveMaxExecSteps() int64 {
 	return n
 }
 
+func (interp *Interpreter) captureNativeMath() {
+	value, ok := interp.globals.Get("Math")
+	if !ok || value == nil || value.Tag != TypeObject || value.ObjVal == nil {
+		return
+	}
+	interp.nativeMathObject = value
+	interp.nativeMathMembers = make(map[string]*Value, len(value.ObjVal))
+	for name, member := range value.ObjVal {
+		interp.nativeMathMembers[name] = member
+	}
+}
+
+func (interp *Interpreter) nativeMathUnmodified() bool {
+	if interp == nil || interp.nativeMathObject == nil || interp.nativeMathMembers == nil {
+		return false
+	}
+	value, ok := interp.globals.Get("Math")
+	if !ok || value != interp.nativeMathObject || value == nil || value.Tag != TypeObject {
+		return false
+	}
+	if len(value.ObjVal) != len(interp.nativeMathMembers) {
+		return false
+	}
+	for name, original := range interp.nativeMathMembers {
+		if value.ObjVal[name] != original {
+			return false
+		}
+	}
+	return true
+}
+
 func NewInterpreter() *Interpreter {
 	interp := &Interpreter{
 		globals:      NewEnvironment(nil),
 		profiler:     NewProfiler(),
 		modules:      make(map[string]*Value),
 		maxExecSteps: resolveMaxExecSteps(),
-		spawnSlots:   make(chan struct{}, 256),
 		jitLoops:     make(map[*ast.Node]*jitLoopState),
 		jitFunctions: make(map[*Function]*jitFunctionState),
 		watchers:     make([]*watcher, 0),
 	}
 	interp.registerBuiltins()
+	interp.captureNativeMath()
 	CallFunction = func(fn *Value, args []*Value, this ...*Value) (*Value, error) {
 		var t *Value
 		if len(this) > 0 {

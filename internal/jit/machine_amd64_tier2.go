@@ -57,7 +57,7 @@ func (w *x86Writer) syncTier2Counters() {
 
 func emitMachineTier2(p *Program) ([]byte, error) {
 	for _, in := range p.Bytecode {
-		if in.Op == OpCallSelf {
+		if in.Op == OpCallSelf || in.Op == OpMath {
 			return emitMachineLegacy(p)
 		}
 	}

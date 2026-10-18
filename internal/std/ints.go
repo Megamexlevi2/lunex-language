@@ -4,154 +4,268 @@ import (
 	"lunex/internal/runtime"
 )
 
-func wrapU8(n float64) float64  { return float64(uint8(int64(n))) }
-func wrapI8(n float64) float64  { return float64(int8(int64(n))) }
-func wrapU16(n float64) float64 { return float64(uint16(int64(n))) }
-func wrapI16(n float64) float64 { return float64(int16(int64(n))) }
-func wrapU32(n float64) float64 { return float64(uint32(int64(n))) }
-func wrapI32(n float64) float64 { return float64(int32(int64(n))) }
-func wrapU64(n float64) float64 { return float64(uint64(int64(n))) }
-func wrapI64(n float64) float64 { return float64(int64(n)) }
+const intsSource = `val U8_MAX = 255
+val I8_MAX = 127
+val I8_MIN = -128
+val U16_MAX = 65535
+val I16_MAX = 32767
+val I16_MIN = -32768
+val U32_MAX = 4294967295
+val I32_MAX = 2147483647
+val I32_MIN = -2147483648
+val U64_MAX = 18446744073709551615
+val I64_MAX = 9223372036854775807
+val I64_MIN = -9223372036854775808
 
-func intUnary(name string, fn func(float64) float64) *runtime.Value {
-	return runtime.FuncVal(&runtime.Function{Name: name, Native: func(args []*runtime.Value, _ *runtime.Value) (*runtime.Value, error) {
-		if len(args) == 0 {
-			return runtime.NumberVal(0), nil
-		}
-		return runtime.NumberVal(fn(args[0].ToNumber())), nil
-	}})
+fn _i64(n) {
+  n | 0
 }
 
-func intBinaryWrapped(name string, width func(float64) float64, op func(a, b int64) int64) *runtime.Value {
-	return runtime.FuncVal(&runtime.Function{Name: name, Native: func(args []*runtime.Value, _ *runtime.Value) (*runtime.Value, error) {
-		if len(args) < 2 {
-			return runtime.NumberVal(0), nil
-		}
-		a := int64(args[0].ToNumber())
-		b := int64(args[1].ToNumber())
-		return runtime.NumberVal(width(float64(op(a, b)))), nil
-	}})
+fn _signExtend(low, shift) {
+  (low << shift) >> shift
 }
 
-func IntsModule() *runtime.Value {
-	return runtime.ObjectVal(map[string]*runtime.Value{
-		"U8_MAX":  runtime.NumberVal(255),
-		"I8_MAX":  runtime.NumberVal(127),
-		"I8_MIN":  runtime.NumberVal(-128),
-		"U16_MAX": runtime.NumberVal(65535),
-		"I16_MAX": runtime.NumberVal(32767),
-		"I16_MIN": runtime.NumberVal(-32768),
-		"U32_MAX": runtime.NumberVal(4294967295),
-		"I32_MAX": runtime.NumberVal(2147483647),
-		"I32_MIN": runtime.NumberVal(-2147483648),
-		"U64_MAX": runtime.NumberVal(18446744073709551615),
-		"I64_MAX": runtime.NumberVal(9223372036854775807),
-		"I64_MIN": runtime.NumberVal(-9223372036854775808),
+fn u8(n) {
+  _i64(n) & 255
+}
 
-		"u8":  intUnary("u8", wrapU8),
-		"i8":  intUnary("i8", wrapI8),
-		"u16": intUnary("u16", wrapU16),
-		"i16": intUnary("i16", wrapI16),
-		"u32": intUnary("u32", wrapU32),
-		"i32": intUnary("i32", wrapI32),
-		"u64": intUnary("u64", wrapU64),
-		"i64": intUnary("i64", wrapI64),
+fn i8(n) {
+  _signExtend(_i64(n) & 255, 56)
+}
 
-		"addU8":  intBinaryWrapped("addU8", wrapU8, func(a, b int64) int64 { return a + b }),
-		"addI8":  intBinaryWrapped("addI8", wrapI8, func(a, b int64) int64 { return a + b }),
-		"addU16": intBinaryWrapped("addU16", wrapU16, func(a, b int64) int64 { return a + b }),
-		"addI16": intBinaryWrapped("addI16", wrapI16, func(a, b int64) int64 { return a + b }),
-		"addU32": intBinaryWrapped("addU32", wrapU32, func(a, b int64) int64 { return a + b }),
-		"addI32": intBinaryWrapped("addI32", wrapI32, func(a, b int64) int64 { return a + b }),
-		"addU64": intBinaryWrapped("addU64", wrapU64, func(a, b int64) int64 { return a + b }),
-		"addI64": intBinaryWrapped("addI64", wrapI64, func(a, b int64) int64 { return a + b }),
+fn u16(n) {
+  _i64(n) & 65535
+}
 
-		"subU8":  intBinaryWrapped("subU8", wrapU8, func(a, b int64) int64 { return a - b }),
-		"subI8":  intBinaryWrapped("subI8", wrapI8, func(a, b int64) int64 { return a - b }),
-		"subU16": intBinaryWrapped("subU16", wrapU16, func(a, b int64) int64 { return a - b }),
-		"subI16": intBinaryWrapped("subI16", wrapI16, func(a, b int64) int64 { return a - b }),
-		"subU32": intBinaryWrapped("subU32", wrapU32, func(a, b int64) int64 { return a - b }),
-		"subI32": intBinaryWrapped("subI32", wrapI32, func(a, b int64) int64 { return a - b }),
-		"subU64": intBinaryWrapped("subU64", wrapU64, func(a, b int64) int64 { return a - b }),
-		"subI64": intBinaryWrapped("subI64", wrapI64, func(a, b int64) int64 { return a - b }),
+fn i16(n) {
+  _signExtend(_i64(n) & 65535, 48)
+}
 
-		"mulU8":  intBinaryWrapped("mulU8", wrapU8, func(a, b int64) int64 { return a * b }),
-		"mulI8":  intBinaryWrapped("mulI8", wrapI8, func(a, b int64) int64 { return a * b }),
-		"mulU16": intBinaryWrapped("mulU16", wrapU16, func(a, b int64) int64 { return a * b }),
-		"mulI16": intBinaryWrapped("mulI16", wrapI16, func(a, b int64) int64 { return a * b }),
-		"mulU32": intBinaryWrapped("mulU32", wrapU32, func(a, b int64) int64 { return a * b }),
-		"mulI32": intBinaryWrapped("mulI32", wrapI32, func(a, b int64) int64 { return a * b }),
-		"mulU64": intBinaryWrapped("mulU64", wrapU64, func(a, b int64) int64 { return a * b }),
-		"mulI64": intBinaryWrapped("mulI64", wrapI64, func(a, b int64) int64 { return a * b }),
+fn u32(n) {
+  _i64(n) & 4294967295
+}
 
-		"shlU32": runtime.FuncVal(&runtime.Function{Name: "shlU32", Native: func(args []*runtime.Value, _ *runtime.Value) (*runtime.Value, error) {
-			if len(args) < 2 {
-				return runtime.NumberVal(0), nil
-			}
-			a := uint32(int64(args[0].ToNumber()))
-			b := uint(int64(args[1].ToNumber())) & 31
-			return runtime.NumberVal(float64(a << b)), nil
-		}}),
+fn i32(n) {
+  _signExtend(_i64(n) & 4294967295, 32)
+}
 
-		"shrU32": runtime.FuncVal(&runtime.Function{Name: "shrU32", Native: func(args []*runtime.Value, _ *runtime.Value) (*runtime.Value, error) {
-			if len(args) < 2 {
-				return runtime.NumberVal(0), nil
-			}
-			a := uint32(int64(args[0].ToNumber()))
-			b := uint(int64(args[1].ToNumber())) & 31
-			return runtime.NumberVal(float64(a >> b)), nil
-		}}),
+fn u64(n) {
+  _i64(n) >>> 0
+}
 
-		"shlU64": runtime.FuncVal(&runtime.Function{Name: "shlU64", Native: func(args []*runtime.Value, _ *runtime.Value) (*runtime.Value, error) {
-			if len(args) < 2 {
-				return runtime.NumberVal(0), nil
-			}
-			a := uint64(int64(args[0].ToNumber()))
-			b := uint(int64(args[1].ToNumber())) & 63
-			return runtime.NumberVal(float64(a << b)), nil
-		}}),
+fn i64(n) {
+  _i64(n)
+}
 
-		"shrU64": runtime.FuncVal(&runtime.Function{Name: "shrU64", Native: func(args []*runtime.Value, _ *runtime.Value) (*runtime.Value, error) {
-			if len(args) < 2 {
-				return runtime.NumberVal(0), nil
-			}
-			a := uint64(int64(args[0].ToNumber()))
-			b := uint(int64(args[1].ToNumber())) & 63
-			return runtime.NumberVal(float64(a >> b)), nil
-		}}),
+fn _words(n) {
+  val u = _i64(n) >>> 0
+  val words = [u & 65535, (u >>> 16) & 65535, (u >>> 32) & 65535, (u >>> 48) & 65535]
+  words
+}
 
-		"rotlU32": runtime.FuncVal(&runtime.Function{Name: "rotlU32", Native: func(args []*runtime.Value, _ *runtime.Value) (*runtime.Value, error) {
-			if len(args) < 2 {
-				return runtime.NumberVal(0), nil
-			}
-			a := uint32(int64(args[0].ToNumber()))
-			b := uint(int64(args[1].ToNumber())) & 31
-			return runtime.NumberVal(float64((a << b) | (a >> (32 - b)))), nil
-		}}),
+fn _combine64(hi, lo) {
+  (hi * 4294967296) + lo
+}
 
-		"rotrU32": runtime.FuncVal(&runtime.Function{Name: "rotrU32", Native: func(args []*runtime.Value, _ *runtime.Value) (*runtime.Value, error) {
-			if len(args) < 2 {
-				return runtime.NumberVal(0), nil
-			}
-			a := uint32(int64(args[0].ToNumber()))
-			b := uint(int64(args[1].ToNumber())) & 31
-			return runtime.NumberVal(float64((a >> b) | (a << (32 - b)))), nil
-		}}),
+fn _addRaw64(a, b) {
+  val aw = _words(a)
+  val bw = _words(b)
 
-		"isU8Overflow": runtime.FuncVal(&runtime.Function{Name: "isU8Overflow", Native: func(args []*runtime.Value, _ *runtime.Value) (*runtime.Value, error) {
-			if len(args) == 0 {
-				return runtime.False, nil
-			}
-			n := args[0].ToNumber()
-			return runtime.BoolVal(n < 0 || n > 255), nil
-		}}),
+  val s0 = aw[0] + bw[0]
+  val c0 = s0 >= 65536
+  val r0 = c0 ? s0 - 65536 : s0
+  var carry = c0 ? 1 : 0
 
-		"isI32Overflow": runtime.FuncVal(&runtime.Function{Name: "isI32Overflow", Native: func(args []*runtime.Value, _ *runtime.Value) (*runtime.Value, error) {
-			if len(args) == 0 {
-				return runtime.False, nil
-			}
-			n := args[0].ToNumber()
-			return runtime.BoolVal(n < -2147483648 || n > 2147483647), nil
-		}}),
-	})
+  val s1 = aw[1] + bw[1] + carry
+  val c1 = s1 >= 65536
+  val r1 = c1 ? s1 - 65536 : s1
+  carry = c1 ? 1 : 0
+
+  val s2 = aw[2] + bw[2] + carry
+  val c2 = s2 >= 65536
+  val r2 = c2 ? s2 - 65536 : s2
+  carry = c2 ? 1 : 0
+
+  val r3 = (aw[3] + bw[3] + carry) & 65535
+
+  _combine64(r2 + r3 * 65536, r0 + r1 * 65536)
+}
+
+fn _subRaw64(a, b) {
+  val aw = _words(a)
+  val bw = _words(b)
+
+  val d0 = aw[0] - bw[0]
+  val borrow0 = d0 < 0
+  val r0 = borrow0 ? d0 + 65536 : d0
+  var borrow = borrow0 ? 1 : 0
+
+  val d1 = aw[1] - bw[1] - borrow
+  val borrow1 = d1 < 0
+  val r1 = borrow1 ? d1 + 65536 : d1
+  borrow = borrow1 ? 1 : 0
+
+  val d2 = aw[2] - bw[2] - borrow
+  val borrow2 = d2 < 0
+  val r2 = borrow2 ? d2 + 65536 : d2
+  borrow = borrow2 ? 1 : 0
+
+  val r3 = (aw[3] - bw[3] - borrow) & 65535
+
+  _combine64(r2 + r3 * 65536, r0 + r1 * 65536)
+}
+
+fn _mulRaw64(a, b) {
+  val aw = _words(a)
+  val bw = _words(b)
+  val acc = [0, 0, 0, 0]
+  var i = 0
+  while i < 4 {
+    var j = 0
+    while j < 4 {
+      val k = i + j
+      if k <= 3 {
+        acc[k] = acc[k] + aw[i] * bw[j]
+      }
+      j = j + 1
+    }
+    i = i + 1
+  }
+
+  var carry = 0
+  val rw = [0, 0, 0, 0]
+  var k = 0
+  while k < 4 {
+    val t = acc[k] + carry
+    rw[k] = t % 65536
+    carry = (t - rw[k]) / 65536
+    k = k + 1
+  }
+
+  _combine64(rw[2] + rw[3] * 65536, rw[0] + rw[1] * 65536)
+}
+
+fn addU8(a, b) { u8(a + b) }
+fn addI8(a, b) { i8(a + b) }
+fn addU16(a, b) { u16(a + b) }
+fn addI16(a, b) { i16(a + b) }
+fn addU32(a, b) { u32(a + b) }
+fn addI32(a, b) { i32(a + b) }
+fn addU64(a, b) { u64(_addRaw64(a, b)) }
+fn addI64(a, b) { i64(_addRaw64(a, b)) }
+
+fn subU8(a, b) { u8(a - b) }
+fn subI8(a, b) { i8(a - b) }
+fn subU16(a, b) { u16(a - b) }
+fn subI16(a, b) { i16(a - b) }
+fn subU32(a, b) { u32(a - b) }
+fn subI32(a, b) { i32(a - b) }
+fn subU64(a, b) { u64(_subRaw64(a, b)) }
+fn subI64(a, b) { i64(_subRaw64(a, b)) }
+
+fn mulU8(a, b) { u8(a * b) }
+fn mulI8(a, b) { i8(a * b) }
+fn mulU16(a, b) { u16(a * b) }
+fn mulI16(a, b) { i16(a * b) }
+fn mulU32(a, b) { u32(a * b) }
+fn mulI32(a, b) { i32(a * b) }
+fn mulU64(a, b) { u64(_mulRaw64(a, b)) }
+fn mulI64(a, b) { i64(_mulRaw64(a, b)) }
+
+fn shlU32(a, b) {
+  (((_i64(a) >>> 0) & 4294967295) << ((_i64(b) >>> 0) & 31)) & 4294967295
+}
+
+fn shrU32(a, b) {
+  ((_i64(a) >>> 0) & 4294967295) >>> ((_i64(b) >>> 0) & 31)
+}
+
+fn shlU64(a, b) {
+  u64(_i64(a) << ((_i64(b) >>> 0) & 63))
+}
+
+fn shrU64(a, b) {
+  _i64(a) >>> ((_i64(b) >>> 0) & 63)
+}
+
+fn rotlU32(a, b) {
+  (((((_i64(a) >>> 0) & 4294967295) << ((_i64(b) >>> 0) & 31)) | (((_i64(a) >>> 0) & 4294967295) >>> ((32 - ((_i64(b) >>> 0) & 31)) & 31))) & 4294967295)
+}
+
+fn rotrU32(a, b) {
+  (((((_i64(a) >>> 0) & 4294967295) >>> ((_i64(b) >>> 0) & 31)) | (((_i64(a) >>> 0) & 4294967295) << ((32 - ((_i64(b) >>> 0) & 31)) & 31))) & 4294967295)
+}
+
+fn isU8Overflow(n) {
+  n < 0 || n > 255
+}
+
+fn isI32Overflow(n) {
+  n < -2147483648 || n > 2147483647
+}
+
+val __module__ = {
+  U8_MAX: U8_MAX,
+  I8_MAX: I8_MAX,
+  I8_MIN: I8_MIN,
+  U16_MAX: U16_MAX,
+  I16_MAX: I16_MAX,
+  I16_MIN: I16_MIN,
+  U32_MAX: U32_MAX,
+  I32_MAX: I32_MAX,
+  I32_MIN: I32_MIN,
+  U64_MAX: U64_MAX,
+  I64_MAX: I64_MAX,
+  I64_MIN: I64_MIN,
+  u8: u8,
+  i8: i8,
+  u16: u16,
+  i16: i16,
+  u32: u32,
+  i32: i32,
+  u64: u64,
+  i64: i64,
+  addU8: addU8,
+  addI8: addI8,
+  addU16: addU16,
+  addI16: addI16,
+  addU32: addU32,
+  addI32: addI32,
+  addU64: addU64,
+  addI64: addI64,
+  subU8: subU8,
+  subI8: subI8,
+  subU16: subU16,
+  subI16: subI16,
+  subU32: subU32,
+  subI32: subI32,
+  subU64: subU64,
+  subI64: subI64,
+  mulU8: mulU8,
+  mulI8: mulI8,
+  mulU16: mulU16,
+  mulI16: mulI16,
+  mulU32: mulU32,
+  mulI32: mulI32,
+  mulU64: mulU64,
+  mulI64: mulI64,
+  shlU32: shlU32,
+  shrU32: shrU32,
+  shlU64: shlU64,
+  shrU64: shrU64,
+  rotlU32: rotlU32,
+  rotrU32: rotrU32,
+  isU8Overflow: isU8Overflow,
+  isI32Overflow: isI32Overflow
+}
+`
+
+func IntsModule(interp interface {
+	ExecAsModule(source, filename string) (*runtime.Value, error)
+}) *runtime.Value {
+	mod, err := interp.ExecAsModule(intsSource, "ints")
+	if err != nil {
+		panic(err)
+	}
+	return mod
 }

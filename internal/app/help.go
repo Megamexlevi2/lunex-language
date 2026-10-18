@@ -22,6 +22,28 @@ type helpPage struct {
 }
 
 var helpPages = map[string]helpPage{
+	"lsp": {
+		Name:    "lsp",
+		Usage:   "lunex lsp",
+		Summary: "Start the Lunex Language Server Protocol process over standard input and output.",
+		Sections: []helpSection{
+			{Title: "Protocol", Rows: []string{
+				"Communicates with language clients using JSON-RPC 2.0 and Content-Length framing.",
+				"Use the editor's LSP client to launch `lunex lsp` as a stdio language server.",
+				"Standard output is reserved for protocol messages; diagnostics and startup failures use the language client's notifications or standard error.",
+			}},
+			{Title: "Features", Rows: []string{
+				"Completion, completion resolution, hover, signatures, definitions, declarations, and type definitions.",
+				"References, document highlights, safe identifier rename, document and workspace symbols, and semantic tokens.",
+				"Compiler and parser diagnostics, code actions for available name suggestions, and brace-based folding ranges.",
+			}},
+			{Title: "Behavior", Rows: []string{
+				"The server analyzes open editor buffers and indexes Lunex source files found in workspace folders.",
+				"Completion filters names by the active lexical scope and receiver type; it does not add null as a generic completion candidate.",
+				"Run `lunex lsp` directly from the editor integration. The process exits when the client sends the LSP exit notification or closes standard input.",
+			}},
+		},
+	},
 	"run": {
 		Name:    "run",
 		Usage:   "lunex run <file.lx|file.nax> [--emit ast|ir] [-- args...]",
@@ -428,6 +450,7 @@ func printHelp() {
 		"set cache <dir>            Configure the disk cache location",
 		"platform                   Show platform and adapter diagnostics",
 		"runtimes                   Show available execution engines",
+		"lsp                        Start the Lunex language server",
 		"env                        Show module stores and project status",
 		"link                       Link project bin commands",
 		"version                    Print the Lunex version",
@@ -477,7 +500,7 @@ func printHelpCompact() {
 		"run <file>", "start", "debug <file>", "-e \"<code>\"", "repl", "check <file>",
 		"see_errors <file>", "init", "pack <file|directory>", "unpack <file.nax>", "install",
 		"add <url>", "remove <library>", "update [library]", "list", "cache [clear]", "memcache [clear]",
-		"set cache <dir>", "platform", "runtimes", "bench <file>", "env", "link", "version", "help [command]",
+		"set cache <dir>", "platform", "runtimes", "lsp", "bench <file>", "env", "link", "version", "help [command]",
 	}
 	for _, cmd := range compact {
 		fmt.Printf("  %s\n", cmd)

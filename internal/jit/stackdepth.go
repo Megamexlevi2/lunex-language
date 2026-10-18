@@ -28,6 +28,13 @@ func bytecodeStackDepths(p *Program) ([]int, error) {
 		case OpStoreSlotKeep, OpSwap, OpNeg, OpJump, OpTick, OpRepeatCheck, OpRepeatDecrement, OpBreak, OpReturn:
 		case OpAdd, OpSub, OpMul, OpDiv, OpMod, OpCompare:
 			d--
+		case OpMath:
+			arity := mathFunctionArity(in.A)
+			if arity == 2 {
+				d--
+			} else if arity != 1 {
+				return 0, fmt.Errorf("unsupported native math function %d", in.A)
+			}
 		case OpBranchFalse, OpBranchTrue:
 			d--
 		default:

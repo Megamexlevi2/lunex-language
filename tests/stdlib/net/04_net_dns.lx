@@ -1,0 +1,15 @@
+val io = @import("std.io")
+val net = @import("std.net")
+
+fn main() {
+  val ips = net.lookupIP("localhost", { timeoutMs: 2000 })
+  assert ips.length > 0
+  for ip in ips {
+    assert net.parseIP(ip) != null
+  }
+  assert net.lookupPort("tcp", "http") == 80
+  assert net.hostname().length > 0
+  assert net.interfaces().length > 0
+
+  io.log("PASS net_dns")
+}

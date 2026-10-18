@@ -21,7 +21,7 @@ func fmovD(rd, rn uint32) uint32 { return 0x1E604000 | (rn << 5) | rd }
 
 func emitMachineTier2(p *Program) ([]byte, error) {
 	for _, in := range p.Bytecode {
-		if in.Op == OpCallSelf {
+		if in.Op == OpCallSelf || in.Op == OpMath {
 			return emitMachineLegacy(p)
 		}
 	}

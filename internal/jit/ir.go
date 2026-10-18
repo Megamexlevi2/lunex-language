@@ -91,6 +91,7 @@ const (
 	OpReturn
 	OpCallSelf
 	OpReturnValue
+	OpMath
 )
 
 type CompareOp uint8
@@ -126,6 +127,7 @@ type Program struct {
 	RangeIndex      int
 	FunctionMode    bool
 	FunctionName    string
+	UsesMathObject  bool
 	Recursive       bool
 	ParamSlots      []int
 }
@@ -880,6 +882,45 @@ func (c *compiler) compileExpr(node *ast.Node) error {
 		c.emit(Instruction{Op: OpLoadSlot, A: idx})
 		c.push(1)
 	case ast.CallExpr:
+		if !node.Optional {
+			if id, ok := nativeMathCall(node); ok {
+				c.program.UsesMathObject = true
+				if id == MathMax || id == MathMin {
+					if len(node.Args) == 0 {
+						value := math.Inf(1)
+						if id == MathMax {
+							value = math.Inf(-1)
+						}
+						c.emit(Instruction{Op: OpPushConst, A: c.constant(value)})
+						c.push(1)
+						break
+					}
+					if err := c.compileExpr(node.Args[0]); err != nil {
+						return err
+					}
+					for _, arg := range node.Args[1:] {
+						if err := c.compileExpr(arg); err != nil {
+							return err
+						}
+						c.emit(Instruction{Op: OpMath, A: id, ErrorNode: c.nodeID(node)})
+						c.push(-1)
+					}
+					break
+				}
+				arity := mathFunctionArity(id)
+				if arity > 0 && len(node.Args) == arity {
+					for _, arg := range node.Args {
+						if err := c.compileExpr(arg); err != nil {
+							return err
+						}
+					}
+					c.emit(Instruction{Op: OpMath, A: id, ErrorNode: c.nodeID(node)})
+					c.push(1 - arity)
+					break
+				}
+				return fmt.Errorf("math call is outside the supported native subset")
+			}
+		}
 		if !c.program.FunctionMode || node.Optional || node.Callee == nil || node.Callee.Type != ast.Identifier || node.Callee.Name == "" {
 			return fmt.Errorf("call is outside native numeric function subset")
 		}
@@ -917,11 +958,28 @@ func (c *compiler) compileExpr(node *ast.Node) error {
 				c.emit(Instruction{Op: OpDiv, ErrorNode: c.nodeID(node)})
 			case "%":
 				c.emit(Instruction{Op: OpMod, ErrorNode: c.nodeID(node)})
+			case "**":
+				c.emit(Instruction{Op: OpMath, A: MathPow, ErrorNode: c.nodeID(node)})
 			default:
 				return fmt.Errorf("operator %q is outside native subset", node.Op)
 			}
 		}
 		c.push(-1)
+	case ast.MemberExpr:
+		if node.Optional || node.Computed || node.Object == nil || node.Object.Type != ast.Identifier || node.Object.Name != "Math" || node.Object.ResolvedAddr != nil {
+			return fmt.Errorf("member expression is outside the native numeric subset")
+		}
+		name, ok := node.Prop.(string)
+		if !ok {
+			return fmt.Errorf("computed math member is outside the native numeric subset")
+		}
+		value, ok := nativeMathConstant(name)
+		if !ok {
+			return fmt.Errorf("unknown native math constant %q", name)
+		}
+		c.program.UsesMathObject = true
+		c.emit(Instruction{Op: OpPushConst, A: c.constant(value)})
+		c.push(1)
 	case ast.UnaryExpr:
 		switch node.Op {
 		case "-":
@@ -1006,6 +1064,21 @@ func (c *compiler) compileExpr(node *ast.Node) error {
 		return fmt.Errorf("expression node %s is outside native subset", node.Type)
 	}
 	return nil
+}
+
+func nativeMathCall(node *ast.Node) (int, bool) {
+	if node == nil || node.Type != ast.CallExpr || node.Callee == nil || node.Callee.Type != ast.MemberExpr {
+		return 0, false
+	}
+	member := node.Callee
+	if member.Optional || member.Computed || member.Object == nil || member.Object.Type != ast.Identifier || member.Object.Name != "Math" || member.Object.ResolvedAddr != nil {
+		return 0, false
+	}
+	name, ok := member.Prop.(string)
+	if !ok {
+		return 0, false
+	}
+	return mathFunction(name)
 }
 
 func (c *compiler) emitFoldedTicks(node *ast.Node) {

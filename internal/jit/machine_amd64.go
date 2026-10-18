@@ -4,6 +4,7 @@ package jit
 
 import (
 	"fmt"
+	"math"
 )
 
 const (
@@ -342,6 +343,106 @@ func (w *x86Writer) callSelf(program *Program, in Instruction, returnLabel int) 
 	return nil
 }
 
+func (w *x86Writer) emitMathSign(newLocal func() int) {
+	zero := newLocal()
+	positive := newLocal()
+	negative := newLocal()
+	done := newLocal()
+	w.movsdLoad(xmm0, regStack, -8)
+	w.xorpdXmm(xmm1, xmm1)
+	w.ucomisd(xmm0, xmm1)
+	w.jcc(0x8A, zero)
+	w.jcc(0x87, positive)
+	w.jcc(0x82, negative)
+	w.jmp(zero)
+	w.mark(positive)
+	w.movqImmReg(0, math.Float64bits(1))
+	w.movqRegToXmm(xmm0, 0)
+	w.jmp(done)
+	w.mark(negative)
+	w.movqImmReg(0, math.Float64bits(-1))
+	w.movqRegToXmm(xmm0, 0)
+	w.jmp(done)
+	w.mark(zero)
+	w.xorpdXmm(xmm0, xmm0)
+	w.mark(done)
+	w.movsdStore(regStack, -8, xmm0)
+}
+
+func (w *x86Writer) emitMathMinMax(id int, newLocal func() int) {
+	keepLeft := newLocal()
+	chooseRight := newLocal()
+	done := newLocal()
+	w.movsdLoad(xmm0, regStack, -16)
+	w.movsdLoad(xmm1, regStack, -8)
+	w.ucomisd(xmm1, xmm0)
+	w.jcc(0x8A, keepLeft)
+	if id == MathMax {
+		w.jcc(0x87, chooseRight)
+	} else {
+		w.jcc(0x82, chooseRight)
+	}
+	w.mark(keepLeft)
+	w.movsdStore(regStack, -16, xmm0)
+	w.jmp(done)
+	w.mark(chooseRight)
+	w.movsdStore(regStack, -16, xmm1)
+	w.mark(done)
+	w.subRegImm8(regStack, 8)
+}
+
+func (w *x86Writer) emitNativeMath(in Instruction, newLocal func() int) error {
+	if in.A == MathSign {
+		w.emitMathSign(newLocal)
+		return nil
+	}
+	if in.A == MathMax || in.A == MathMin {
+		w.emitMathMinMax(in.A, newLocal)
+		return nil
+	}
+	address := nativeMathAddress(in.A)
+	if address == 0 {
+		return fmt.Errorf("native math symbol for operation %d is unavailable", in.A)
+	}
+	arity := mathFunctionArity(in.A)
+	if arity == 1 {
+		w.movsdLoad(xmm0, regStack, -8)
+	} else if arity == 2 {
+		w.movsdLoad(xmm0, regStack, -16)
+		w.movsdLoad(xmm1, regStack, -8)
+	} else {
+		return fmt.Errorf("unsupported native math arity for operation %d", in.A)
+	}
+	w.u8(0x41)
+	w.u8(0x52)
+	w.u8(0x41)
+	w.u8(0x53)
+	w.u8(0x41)
+	w.u8(0x54)
+	w.movqRR(12, 4)
+	w.u8(0x48)
+	w.u8(0x83)
+	w.u8(0xE4)
+	w.u8(0xF0)
+	w.movqImmReg(0, uint64(address))
+	w.u8(0xFF)
+	w.u8(0xD0)
+	w.movqRR(4, 12)
+	w.u8(0x41)
+	w.u8(0x5C)
+	w.u8(0x41)
+	w.u8(0x5B)
+	w.u8(0x41)
+	w.u8(0x5A)
+	if arity == 2 {
+		w.movsdStore(regStack, -16, xmm0)
+		w.subRegImm8(regStack, 8)
+	} else {
+		w.movsdStore(regStack, -8, xmm0)
+	}
+	return nil
+}
+
 func emitMachineLegacy(p *Program) ([]byte, error) {
 	w := &x86Writer{labels: make(map[int]int)}
 	returnLabel := 1 << 29
@@ -486,6 +587,10 @@ func emitMachineLegacy(p *Program) ([]byte, error) {
 
 		case OpNeg:
 			w.negTop()
+		case OpMath:
+			if err := w.emitNativeMath(in, newLocal); err != nil {
+				return fail(i, err)
+			}
 		case OpCompare:
 			w.subRegImm8(regStack, 8)
 			w.movsdLoad(xmm1, regStack, 0)

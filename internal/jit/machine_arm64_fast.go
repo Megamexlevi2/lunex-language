@@ -51,6 +51,9 @@ func a64FastEligible(p *Program) error {
 		return fmt.Errorf("fast expression stack exceeds %d values", a64FastMaxStack)
 	}
 	for i, in := range p.Bytecode {
+		if in.Op == OpMath {
+			return fmt.Errorf("native math calls use the general register backend")
+		}
 		if in.Op != OpMod {
 			continue
 		}

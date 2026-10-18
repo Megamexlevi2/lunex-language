@@ -80,8 +80,6 @@ func (f *Formatter) printNode(n *ast.Node, topLevel bool) {
 		f.printImportDecl(n)
 	case ast.ExportDecl:
 		f.printExportDecl(n)
-	case ast.SpawnStmt:
-		f.writeLine("spawn " + f.expr(n.Expr))
 	case ast.DeferStmt:
 		f.writeLine("defer " + f.expr(n.Expr))
 	case ast.AssertStmt:

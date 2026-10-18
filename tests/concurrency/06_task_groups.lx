@@ -1,0 +1,26 @@
+val io = @import("std.io")
+
+fn square(n) {
+  n * n
+}
+
+fn main() {
+  val handles = [new.task(square, 2), new.task(square, 3), new.task(square, 4)]
+  val results = tasks.all(handles)
+  if results.join(",") != "4,9,16" { throw "tasks.all returned incorrect values or ordering" }
+
+  val winner = tasks.any([new.task(square, 5), new.task(square, 6)])
+  if winner.index == 0 {
+    if winner.value != 25 { throw "tasks.any returned an incorrect value for index 0" }
+  } else {
+    if winner.index != 1 { throw "tasks.any returned an invalid task index" }
+    if winner.value != 36 { throw "tasks.any returned an incorrect value for index 1" }
+  }
+
+  val emptyAll = tasks.all([])
+  if emptyAll.length != 0 { throw "tasks.all must return an empty array for empty input" }
+  val emptyAny = tasks.any([])
+  if emptyAny.index != -1 { throw "tasks.any must use index -1 for empty input" }
+  if emptyAny.value != undefined { throw "tasks.any must return undefined for empty input" }
+  io.log("PASS task_groups")
+}

@@ -1,5 +1,6 @@
 val io     = @import("std.io")
 val crypto = @import("std.crypto")
+val encoding = @import("std.encoding")
 
 fn main() {
   io.log("SHA-256:", crypto.sha256("hello"))
@@ -8,8 +9,8 @@ fn main() {
 
   io.log("UUID:   ", crypto.randomUUID())
 
-  val encoded = crypto.base64Encode("Hello, Lunex!")
-  val decoded = crypto.base64Decode(encoded)
+  val encoded = encoding.base64Encode("Hello, Lunex!")
+  val decoded = encoding.base64DecodeText(encoded)
   io.log("Base64 encode:", encoded)
   io.log("Base64 decode:", decoded)
 

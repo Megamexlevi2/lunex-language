@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"fmt"
+
 	"lunex/internal/ast"
 	"lunex/internal/errfmt"
 	"lunex/internal/resolver"
@@ -479,36 +480,30 @@ func (interp *Interpreter) execComponent(node *ast.Node, env *Environment) (*Val
 }
 
 func (interp *Interpreter) execSelect(node *ast.Node, env *Environment) (*Value, error) {
-	type result struct {
-		idx int
-		val *Value
+	if len(node.SelectCases) == 0 {
+		return Undefined, nil
 	}
-	ch := make(chan result, len(node.SelectCases))
-	for i, sc := range node.SelectCases {
-		i, sc := i, sc
-		go func() {
-			chanVal, err := interp.evalExpr(sc.Channel, env)
-			if err != nil {
-				ch <- result{idx: i, val: Null}
-				return
-			}
-			var val *Value
-			if chanVal.Tag == TypeChannel {
-				val = chanVal.ChanVal.Receive()
-			} else {
-				val = chanVal
-			}
-			ch <- result{idx: i, val: val}
-		}()
-	}
-	r := <-ch
-	if r.idx < len(node.SelectCases) {
-		sc := node.SelectCases[r.idx]
-		caseEnv := NewEnvironment(env)
-		if sc.Binding != "" {
-			caseEnv.Define(sc.Binding, r.val, false)
+	tasks := make([]*Task, 0, len(node.SelectCases))
+	for _, sc := range node.SelectCases {
+		value, err := interp.evalExpr(sc.Expr, env)
+		if err != nil {
+			return nil, err
 		}
-		interp.execNode(sc.Body, caseEnv)
+		if value == nil || value.Tag != TypeTask || value.TaskVal == nil {
+			return nil, interp.runtimeError(errfmt.KindType, "E0003", "select cases must evaluate to tasks", sc.Expr, nil)
+		}
+		tasks = append(tasks, value.TaskVal)
 	}
-	return Undefined, nil
+	selected := taskEvents.waitAny(tasks)
+	value, err := tasks[selected].Await()
+	if err != nil {
+		return nil, err
+	}
+	sc := node.SelectCases[selected]
+	caseEnv := NewEnvironment(env)
+	if sc.Binding != "" {
+		caseEnv.Define(sc.Binding, value, false)
+	}
+	_, err = interp.execNode(sc.Body, caseEnv)
+	return Undefined, err
 }

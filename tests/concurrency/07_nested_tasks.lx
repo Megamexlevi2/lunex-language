@@ -1,0 +1,17 @@
+val io = @import("std.io")
+
+fn double(n) {
+  n * 2
+}
+
+fn parent(n) {
+  val child = new.task(double, n)
+  child.await()
+}
+
+fn main() {
+  val outer = new.task(parent, 21)
+  val result = outer.await()
+  if result != 42 { throw "nested task returned an incorrect value" }
+  io.log("PASS nested_tasks")
+}

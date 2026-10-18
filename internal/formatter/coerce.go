@@ -29,7 +29,6 @@ func walkFix(n *ast.Node) {
 	walkFix(n.Hi)
 	walkFix(n.Count)
 	walkFix(n.Ms)
-	walkFix(n.Channel)
 	walkFix(n.Guard)
 	walkFix(n.Declaration)
 	walkFix(n.Extends)
@@ -65,7 +64,7 @@ func walkFix(n *ast.Node) {
 	}
 	for _, sc := range n.SelectCases {
 		walkFix(sc.Body)
-		walkFix(sc.Channel)
+		walkFix(sc.Expr)
 	}
 	for _, pm := range n.Params {
 		walkFix(pm.DefaultVal)

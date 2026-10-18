@@ -1,0 +1,28 @@
+val io = @import("std.io")
+
+fn worker(id) {
+  var sum = 0
+  var i = 0
+  while i < 1000 {
+    sum = sum + i
+    i = i + 1
+  }
+  struct {
+    worker = id
+    result = sum
+  }
+}
+
+fn main() {
+  val handles = [new.task(worker, 1), new.task(worker, 2), new.task(worker, 3)]
+  val results = tasks.all(handles)
+  if results.length != 3 { throw "tasks.all must return all worker results" }
+  each index in [0, 1, 2] {
+    if results[index].worker != index + 1 { throw "tasks.all must preserve worker order" }
+    if results[index].result != 499500 { throw "worker returned an incorrect sum" }
+  }
+  each result in results {
+    io.log("worker", result.worker, "sum:", result.result)
+  }
+  io.log("PASS task_workers")
+}

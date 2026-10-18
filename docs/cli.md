@@ -192,6 +192,70 @@ lunex runtimes
 
 ---
 
+### `lunex lsp`
+
+Start the Lunex Language Server Protocol server for an editor or IDE.
+
+```
+lunex lsp
+lunex lsp --help
+```
+
+I run as a long-lived process and communicate over standard input and standard output using JSON-RPC 2.0 messages framed with `Content-Length` headers. I reserve standard output exclusively for protocol traffic; I send startup or transport errors to standard error. I do not execute the source program while providing editor features.
+
+#### Connecting an editor
+
+I expect the editor's LSP client to launch the `lunex` executable with `lsp` as its argument. The editor must have a Lunex language configuration that associates `.lx` files with that client. I use the workspace root supplied by the client, or the current working directory when the client does not provide a root. The process should be managed by the editor client rather than started as a separate terminal session.
+
+A client configuration uses this command and argument pair:
+
+```json
+{
+  "command": "lunex",
+  "args": ["lsp"]
+}
+```
+
+The executable must be available on the environment's `PATH`, or the client must supply its absolute path. I use UTF-16 document positions, incremental document synchronization, and normal LSP lifecycle messages. The editor should send `initialize`, `initialized`, document open/change/save/close notifications, then `shutdown` and `exit` when it is finished.
+
+#### Features I provide
+
+| Feature | Behavior |
+|---------|----------|
+| Completion | I suggest visible Lunex declarations, supported built-ins, language keywords, recognized standard-library members, object-literal properties, array members, and string members. |
+| Completion resolution | I enrich selected items with the information already attached to the item. |
+| Diagnostics | I run the Lunex parser and checker for open buffers and publish syntax and semantic diagnostics with document ranges. |
+| Hover | I show symbol details and inferred literal or declaration information where the current analysis can establish it. |
+| Definition and declaration | I navigate to known symbol declarations in the current file or workspace index. |
+| Type definition | I navigate to a statically resolved type declaration when the available type information identifies one. |
+| References | I find matching identifier occurrences in the current file and relevant files that import the target source. |
+| Rename | I prepare identifier renames and return workspace edits for occurrences connected by the available symbol and scope information. |
+| Document symbols | I list top-level declarations and recognized members for editor outlines and breadcrumbs. |
+| Workspace symbols | I search indexed top-level Lunex declarations across workspace `.lx` files. |
+| Document highlights | I highlight same-name identifier occurrences in the active document. |
+| Semantic tokens | I classify recognized symbols, parameters, keywords, literals, operators, and member names. |
+| Signature help | I show known function or component parameters while the cursor is inside a call. |
+| Code actions | I offer replacement quick fixes when a Lunex diagnostic includes a concrete “did you mean” suggestion. |
+| Folding ranges | I expose multi-line brace-delimited regions for editor folding. |
+
+#### Analysis and completion behavior
+
+I reuse the Lunex lexer, parser, AST, and checker. I analyze the current unsaved buffer after each document change, so diagnostics and suggestions do not require the file to be saved first. I scan workspace `.lx` files for symbols and skip common generated or dependency directories such as `.git`, `.lunex`, `node_modules`, `vendor`, `dist`, `build`, `target`, `coverage`, and `.cache`. I cap this initial workspace scan at 25,000 source files.
+
+I filter ordinary completion candidates using the current lexical scope and, when I can identify it, the receiver's type. For example, after a string variable and a dot, I suggest the Lunex string operations rather than unrelated global names. For an object literal, I use its declared property and method names. I do not inject `null` into the general completion list, and I avoid suggesting names that are not recognized by the current analysis. Boolean literals are offered only when the typed prefix matches them.
+
+I recognize the standard-library members explicitly listed by the server and local members that can be recovered from the parsed source. I do not invent members for a module whose exported shape I cannot establish. When the current buffer is incomplete or cannot be parsed, I attempt prefix recovery from earlier lines so existing declarations remain available. I still report syntax errors, and suggestions that require the missing syntax or type information may be limited until the buffer can be analyzed.
+
+#### Workspace and source resolution
+
+I index `.lx` files under the workspace folders sent by the editor. I resolve local imports relative to the importing file, trying the supplied path, a `.lx` suffix when no extension is present, and a `main.lx` entry inside a directory. Standard-library identifiers are suggested from the server's known member lists. Project dependency and generated archive formats are not treated as editable `.lx` source documents by the workspace scanner.
+
+#### Troubleshooting
+
+If the editor shows no language features, I first check that `lunex lsp` is executable from the editor's environment and that the client associates `.lx` files with the LSP process. I then inspect the editor's LSP logs and the process standard error. I keep standard output free of banners, prompts, and debug text because any non-protocol output can break the JSON-RPC stream. I use `lunex help lsp` for the concise command help.
+
+---
+
 ## Cache management
 
 ```

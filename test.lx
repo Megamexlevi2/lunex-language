@@ -1,0 +1,39 @@
+val io = @import("std.io")
+val utils = @import("std.utils")
+
+fn fib(n) {
+  if n < 2 {
+    n
+  } else {
+    fib(n - 1) + fib(n - 2)
+  }
+}
+
+fn sumTo(n) {
+  var s = 0
+  var i = 0
+  while i < n {
+    s = s + i
+    i = i + 1
+  }
+  s
+}
+
+fn round(k) {
+  val s0 = utils.now()
+  val a = fib(32)
+  val b = sumTo(5000000)
+  val seq = utils.now() - s0
+
+  val p0 = utils.now()
+  val res = tasks.all([new.task(fib, 32), new.task(sumTo, 5000000)])
+  val par = utils.now() - p0
+
+  io.log("rodada", k, "sequencial ms:", seq, "tasks ms:", par, "iguais:", res[0] == a && res[1] == b)
+}
+
+fn main() {
+  round(1)
+  round(2)
+  round(3)
+}

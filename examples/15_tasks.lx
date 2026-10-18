@@ -1,0 +1,40 @@
+val io = @import("std.io")
+
+fn worker(id) {
+  var sum = 0
+  var i = 0
+  while i < 1000 {
+    sum = sum + i
+    i = i + 1
+  }
+  struct {
+    id = id
+    sum = sum
+  }
+}
+
+fn square(n) {
+  n * n
+}
+
+fn main() {
+  val task1 = new.task(worker, 1)
+  val task2 = new.task(worker, 2)
+  val task3 = new.task(worker, 3)
+  val results = tasks.all([task1, task2, task3])
+
+  if results.length != 3 { throw "tasks.all must return three worker results" }
+  each index in [0, 1, 2] {
+    if results[index].id != index + 1 { throw "tasks.all must preserve input order" }
+    if results[index].sum != 499500 { throw "worker returned an incorrect sum" }
+  }
+
+  val squares = parallel.map(square, [1, 2, 3, 4, 5, 6])
+  if squares.join(",") != "1,4,9,16,25,36" { throw "parallel.map returned incorrect squares" }
+
+  each result in results {
+    io.log("worker", result.id, "sum:", result.sum)
+  }
+  io.log("parallel squares:", squares)
+  io.success("PASS task workers example")
+}

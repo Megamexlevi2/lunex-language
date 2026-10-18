@@ -1,0 +1,30 @@
+val io = @import("std.io")
+val net = @import("std.net")
+
+fn main() {
+  assert net.parseIP("127.0.0.1") == "127.0.0.1"
+  assert net.parseIP("not-an-ip") == null
+  assert net.isIP("127.0.0.1") == 4
+  assert net.isIP("2001:db8::1") == 6
+  assert net.isIP("not-an-ip") == 0
+  assert net.joinHostPort("::1", 443) == "[::1]:443"
+
+  val split = net.splitHostPort("[::1]:443")
+  assert split.host == "::1"
+  assert split.port == "443"
+
+  val cidr = net.parseCIDR("192.168.10.14/24")
+  assert cidr.network == "192.168.10.0/24"
+  assert cidr.prefix == 24
+  assert cidr.broadcast == "192.168.10.255"
+  assert net.containsCIDR("192.168.10.0/24", "192.168.10.20")
+  assert !net.containsCIDR("192.168.10.0/24", "192.168.11.20")
+  assert net.isPrivate("10.1.2.3")
+  assert net.isLoopback("::1")
+  assert net.to4("::ffff:192.0.2.1") == "192.0.2.1"
+  assert net.to16("127.0.0.1") == "::ffff:127.0.0.1"
+  assert net.to16("2001:db8::1") == "2001:db8::1"
+  assert net.to16("not-an-ip") == null
+
+  io.log("PASS net_ip")
+}

@@ -36,13 +36,12 @@ cd lunex-language
 make
 ```
 
-#### Using CMake
+#### Using PowerShell (Windows)
 
 ```bash
 git clone https://github.com/Megamexlevi2/lunex-language
 cd lunex-language
-cmake -B build
-cmake --build build
+.\build.ps1
 ```
 
 Try Lunex Online
@@ -111,9 +110,10 @@ io.log(add(2, 3))
 io.log(square(5))    
 ```
 
-### Structs
+### Structs and Factory Functions
 
-No `class` keyword. Factory functions return a `struct`:
+Struct values and factory functions are useful for creating lightweight
+objects:
 
 ```lx
 fn Animal(name, sound) {
@@ -129,7 +129,7 @@ fn Animal(name, sound) {
 }
 
 val cat = Animal("Cat", "Meow")
-io.log(cat.speak())   
+io.log(cat.speak())
 ```
 
 ### Control Flow
@@ -221,14 +221,19 @@ nums.length
 ### Concurrency
 
 ```lx
-val ch = channel()
+fn calculate(n) {
+  n * n
+}
 
-spawn fn() {
-  ch.send(computeSomething())
-}()
-
-val result = ch.recv()
+val task = new.task(calculate, 12)
+val result = task.await()
 io.log(result)
+
+val batch = [new.task(calculate, 2), new.task(calculate, 3)]
+io.log(tasks.all(batch))
+
+val results = parallel.map(calculate, [1, 2, 3, 4, 5])
+io.log(results)
 ```
 
 ### Defer
@@ -346,7 +351,8 @@ val xml = @import("lune-xml")
 | `std.http`     | HTTP client and server primitives                        |
 | `std.http.router` | Request routing on top of `std.http`                  |
 | `std.http.static` | Static file handler on top of `std.http`              |
-| `std.crypto`   | Hashing, encoding, encryption, passwords, UUIDs          |
+| `std.crypto`   | Hashing, encryption, passwords, UUIDs, secure randomness |
+| `std.encoding` | UTF-8/16/32, Latin-1, Base64/Base32, URL percent encoding |
 | `std.db`       | SQLite-backed document database (stored on disk)         |
 | `std.ws`       | WebSocket server and client                              |
 | `std.jwt`      | JSON Web Token sign and verify                           |
@@ -374,7 +380,7 @@ Check out [`examples/`](examples/) for runnable code covering everything from th
 - Control flow: `if`, `while`, `each`, `guard`, `unless`, `watch`, `match`
 - Standard library: math, crypto, fs, datetime, os, HTTP, byte buffers, fixed-width integers
 - Higher-order functions: map, filter, reduce, compose, memoize
-- Concurrent workers with `spawn` and `channel`
+- Concurrent tasks with `new.task` and `parallel.map`
 - HTTP servers and REST APIs
 
 ---

@@ -1,0 +1,44 @@
+val io = @import("std.io")
+val encoding = @import("std.encoding")
+
+fn main() {
+  val text = "Lunex café 😀"
+  val utf8 = encoding.utf8Encode(text)
+  assert encoding.utf8Decode(utf8, true) == text
+
+  val utf16le = encoding.utf16Encode(text, "le", true)
+  val utf16be = encoding.utf16Encode(text, "be", true)
+  assert encoding.utf16Decode(utf16le) == text
+  assert encoding.utf16Decode(utf16be) == text
+
+  val utf32le = encoding.utf32Encode(text, "le", true)
+  val utf32be = encoding.utf32Encode(text, "be", true)
+  assert encoding.utf32Decode(utf32le) == text
+  assert encoding.utf32Decode(utf32be) == text
+
+  val latin = encoding.latin1Encode("café")
+  assert encoding.latin1Decode(latin) == "café"
+
+  val b64 = encoding.base64Encode("Hello")
+  assert b64 == "SGVsbG8="
+  assert encoding.base64DecodeText(b64) == "Hello"
+  assert encoding.base64Encode("Hello", true, false) == "SGVsbG8"
+  assert encoding.base64UrlEncode("Hello") == "SGVsbG8"
+  assert encoding.base64UrlDecodeText("SGVsbG8") == "Hello"
+  val urlBytes = encoding.base64UrlDecode(encoding.base64UrlEncode([251, 255]))
+  assert urlBytes[0] == 251 && urlBytes[1] == 255
+
+  val b32 = encoding.base32Encode("foo")
+  assert b32 == "MZXW6==="
+  assert encoding.base32DecodeText(b32) == "foo"
+
+  val escaped = encoding.percentEncode("hello world/ café")
+  assert escaped == "hello%20world%2F%20caf%C3%A9"
+  assert encoding.percentDecode(escaped) == "hello world/ café"
+  assert encoding.formEncode("hello world") == "hello+world"
+  assert encoding.formDecode("hello+world") == "hello world"
+
+  assert encoding.decode(encoding.encode(text, "utf-8"), "utf8") == text
+  assert encoding.decode(encoding.encode("hello", "base64"), "base64") == "hello"
+  io.log("PASS encoding")
+}

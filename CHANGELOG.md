@@ -1,6 +1,169 @@
 
 ---
 
+# Lunex changelog — 0.9.4 → 0.9.5
+
+The big thing here is that I ripped out `spawn`/`channel` and replaced them with a task-based concurrency model. That touched the lexer, parser, checker, resolver, formatter and runtime, so it's the center of gravity for this release. Around that I added two sizable new modules (`std.net` and `std.encoding`), a real Language Server, native math in the JIT, a Windows build script, and a checker bug that's been bugging me for a while.
+
+## Concurrency: `spawn`/`channel` are gone, tasks are here
+
+This is a breaking change and I'm not going to pretend otherwise. `spawn fn() { ... }()` and `channel()` are no longer valid syntax — the lexer doesn't know those keywords anymore. If you have 0.9.4 code using them, it won't parse.
+
+What replaces it:
+
+```lx
+fn square(n) {
+  n * n
+}
+
+val task = new.task(square, 21)
+val result = task.await()
+```
+
+`new.task(fn, ...args)` schedules a function call on a worker pool and gives you back a task handle immediately. The handle has four methods:
+
+- `task.await()` — block until it finishes and return the result (or propagate the error).
+- `task.done()` — `true` once it's finished, failed, or been cancelled.
+- `task.state()` — `"pending"`, `"running"`, `"completed"`, `"failed"`, or `"cancelled"`.
+- `task.cancel()` — cancel it, but only while it's still pending. Returns whether that worked. A task that's already running keeps running; cancellation doesn't interrupt it.
+
+For groups of tasks there's `tasks.all(handles)`, which waits for everything and returns results in input order (first failure wins and gets propagated), and `tasks.any(handles)`, which returns as soon as one finishes, as `{ index, value }`. Both return sane values on an empty array instead of hanging — `tasks.all([])` is `[]`, `tasks.any([])` is `{ index: -1, value: undefined }`.
+
+`parallel.map(fn, array)` splits an array across the worker pool and gives you back results in order:
+
+```lx
+val squares = parallel.map(square, [1, 2, 3, 4, 5])
+```
+
+`select` is still around, but it waits on task handles now instead of channels — `case value = someTask => { ... }` instead of reading off a channel. Whichever task is done first wins, with source order breaking ties.
+
+```lx
+select {
+  case value = first => {
+    io.log("First completed:", value)
+  }
+  case value = second => {
+    io.log("First completed:", value)
+  }
+}
+```
+
+One thing I didn't expect going in: because `new.task` feeds through the same JIT path as hot functions, a task running a pure numeric function can get compiled to native code the same way a hot loop would, instead of always going through the interpreter. `parallel.map` does this too when every element is a number. It's opportunistic — nothing you need to configure, and anything that doesn't qualify just runs on the interpreter like before.
+
+`Promise.all(arr)` in the JS-compatibility layer is built on top of this now too, so it waits on real Lunex task handles. It still only takes arrays, not arbitrary iterables or thenables.
+
+## `std.net` — new
+
+A full networking module: TCP, UDP, Unix sockets, TLS, DNS, and IP/CIDR utilities, all synchronous.
+
+```lx
+val net = @import("std.net")
+
+val conn = net.dial("tcp", "example.com:80")
+conn.write("GET / HTTP/1.0\r\n\r\n")
+io.log(conn.readLine())
+conn.close()
+```
+
+Connections: `dial`, `dialTimeout`, `dialTCP`, `dialUDP`, `dialTLS`, with `listen`, `listenTCP`, `listenUDP`, `listenPacket`, and `listenTLS` on the server side. A connection gives you `read`/`readBytes`/`readFull`/`readLine`, `write`/`writeBytes`, deadlines (`setDeadline`, `setReadDeadline`, `setWriteDeadline`), TCP-specific knobs (`setNoDelay`, `setKeepAlive`, `setKeepAlivePeriod`), and `tlsState()` for the negotiated version, cipher suite and peer certificates on a TLS connection. Listeners give you `accept()`, `address()`/`addr()`, and `close()`. Packet connections (UDP) get `readFrom`/`writeTo` instead, since there's no single peer.
+
+DNS is in there too: `lookupIP`, `lookupAddr` (reverse lookup), `lookupCNAME`, `lookupMX`, `lookupNS`, `lookupTXT`, `lookupSRV`, `lookupPort`, plus `hostname()`, `interfaces()`, and `localIPs()` for local machine info. DNS failures are real errors now, not silently-empty results.
+
+And a set of IP/CIDR helpers that don't touch the network at all — `parseIP`, `isIP`, `parseCIDR`, `containsCIDR`, `isPrivate`, `isLoopback`, `isMulticast`, `joinHostPort`/`splitHostPort`, and similar — useful for validating input or writing access rules without spinning up a socket.
+
+Timeouts throughout are `timeoutMs` (or the alias `timeout`), always in milliseconds.
+
+## `std.encoding` — new, and `base64*` moved out of `std.crypto`
+
+```lx
+val encoding = @import("std.encoding")
+
+val bytes = encoding.utf8Encode("Lunex ✓")
+val text = encoding.utf8Decode(bytes, true)
+val encoded = encoding.base64Encode("Hello, Lunex!")
+val decoded = encoding.base64DecodeText(encoded)
+```
+
+This is the breaking part: `crypto.base64Encode`, `crypto.base64Decode`, `crypto.base64UrlEncode`, and `crypto.base64UrlDecode` are gone from `std.crypto`. `std.crypto` keeps Base64 only internally for its own cryptographic formats now. If you were calling those four functions off `crypto`, switch to `std.encoding` — `base64Encode`/`base64Decode` plus `base64DecodeText` if you want the bytes decoded straight to UTF-8 text, since the raw decoder now returns a byte array instead of a string.
+
+Beyond Base64, `std.encoding` covers a lot of ground: UTF-8/UTF-16/UTF-32 encode and decode (with explicit `le`/`be`/`auto` endianness and BOM handling), Latin-1, Base32, and URL percent-encoding (`percentEncode`/`percentDecode`, plus `formEncode`/`formDecode` for the `application/x-www-form-urlencoded` variant that uses `+` for spaces). There's also a generic `encode(text, format)` / `decode(input, format, fatal)` pair if you'd rather pick the format by string than call a format-specific function.
+
+Decoders replace invalid sequences with U+FFFD by default; pass `fatal=true` to reject malformed input instead of silently substituting. Anything that fails in this module — bad padding, an unsupported format name, an invalid percent escape, a Latin-1 character outside U+0000–U+00FF — throws with the new `E0140` code.
+
+## A real Language Server
+
+```bash
+lunex lsp
+```
+
+`lunex lsp` starts a standard JSON-RPC 2.0 language server over stdin/stdout, so any editor with an LSP client can talk to it. It covers the usual set: completion (filtered by lexical scope and receiver type, so after a string and a dot you get string methods, not every global in scope), hover, signature help, go-to-definition/declaration/type-definition, find references, rename, document and workspace symbols, document highlights, semantic tokens, diagnostics from the real parser and checker, a few code actions for "did you mean" suggestions, and folding ranges.
+
+It analyzes your buffer as you type rather than waiting for a save, and indexes `.lx` files across the workspace (skipping the usual suspects — `.git`, `node_modules`, `vendor`, `dist`, `build`, and so on) up to 25,000 files. Point your editor's Lunex extension at the `lunex` binary with `lsp` as the argument and it should just connect.
+
+## Native math in the JIT
+
+Functions and loops that already qualified for native compilation can now use `Math` directly instead of falling back to the interpreter the moment they touch it:
+
+```lx
+fn distance(x, y) {
+  Math.sqrt(x ** 2 + y ** 2)
+}
+```
+
+`abs`, `ceil`, `floor`, `round`, `sign`, `min`, and `max` compile straight to inline SSE2 instructions on amd64. Everything else — `sqrt`, `cbrt`, the trig functions, `log`/`log2`/`log10`, `exp`, `pow`, `atan2` — resolves against the system's own math library (`libm`) through `purego`, so there's still no CGo dependency and no C compiler needed to build Lunex. This only works on Linux, Android, and macOS for now; on Windows those calls just stay on the interpreter. `**` compiles to the same native `pow` as `Math.pow`, and `Math.PI`, `Math.E`, and the other `Math` constants are recognized as compile-time constants rather than falling through to an object lookup.
+
+None of this changes what your code returns — it's purely about what qualifies for the fast path.
+
+## `std.ints` rewritten in Lunex itself
+
+`std.ints` used to be plain Go, leaning on real `int64`/`uint32` machine types for the wrapping arithmetic. It's now written entirely in Lunex — the module source is Lunex code executed at startup, the same trick `std.encoding` uses. Since Lunex only has one numeric type (a float64), the 64-bit operations (`addU64`, `subU64`, `mulU64`, `shlU64`, `shrU64`, and so on) now do their own carry/borrow arithmetic across 16-bit words instead of relying on the host language's integer types.
+
+I didn't change any inputs or outputs doing this — same functions, same signatures, same wrapping behavior at every width, and the existing test suite for this module passes unmodified. The point was consistency: one less module relying on native Go types for behavior that's supposed to be part of the language itself.
+
+## Fixed: a `catch` binding could leak out of its block during `lunex check`
+
+```lx
+fn main() {
+  try {
+    riskyThing()
+  } catch (err) {
+    io.log(err)
+  }
+  io.log(err)   // used to pass lunex check; now correctly flagged
+}
+```
+
+The runtime always scoped `err` correctly — this was purely a static-analysis gap. `lunex check` was adding the catch parameter straight into the surrounding scope instead of giving the catch block its own, so referencing it after the block closed didn't get flagged even though it would fail at runtime. The checker now builds a dedicated scope for the catch block, matching what the resolver already did, so `lunex check` and `lunex run` agree on this again.
+
+## Windows builds without CMake
+
+```powershell
+.\build.ps1
+```
+
+Previously, building on Windows from source meant going through CMake. `build.ps1` is a native PowerShell build script that does the same job directly — no CMake, no separate `cmake/` directory to maintain. `CMakeLists.txt` and `cmake/` are gone from the repo.
+
+The Unix-side scripts (`build.sh`, `build-termux.sh`, and the `Makefile`'s own installer) got friendlier too: if Go isn't found, they now detect your package manager (`apt`, `dnf`, `pacman`, `apk`, `zypper`, `brew`, or Termux's `pkg`) and offer to install Go through it, with a `curl`-from-go.dev download as the fallback if you'd rather not use the package manager, or if none was found.
+
+## Smaller stuff
+
+- **`E0067` was redefined.** It used to mean "invalid UTF-8 byte sequence"; that behavior is covered by `std.encoding`'s `E0140` now. `E0067` means malformed JSON input to `std.json` parsing.
+- **Error hints updated for the new concurrency model** — the "protect shared state" hint now says "Mutex or task-safe synchronization" instead of mentioning Channels specifically.
+- **Tests** — `tests/concurrency/` was rewritten around tasks (background tasks, numeric and object mapping, task workers, ordered task groups, empty-input behavior, nested tasks, lifecycle state and cancellation), plus new `tests/stdlib/net/` and `tests/stdlib/encoding/` suites. The two task example files (`examples/06_tasks.lx`, `examples/15_tasks.lx`) are now run as part of the test suite, not just sitting there as documentation.
+- **`CONTRIBUTING.md`** documents `internal/lsp/`, `internal/checker/`, `internal/resolver/`, and `internal/jit/` in the repo-layout table, which were missing before even though some of them already existed.
+
+## Breaking changes, summarized
+
+If you're upgrading from 0.9.4, here's what will actually bite you:
+
+1. `spawn` and `channel()` no longer parse. Rewrite that code against `new.task`, `tasks.all`/`tasks.any`, or `parallel.map`.
+2. `select` cases now evaluate to task handles, not channels. `case x := someChannel` style code needs to produce a task instead.
+3. `crypto.base64Encode`, `crypto.base64Decode`, `crypto.base64UrlEncode`, and `crypto.base64UrlDecode` are gone. Use the equivalents in `std.encoding`, and note that the raw decoders now return byte arrays — use `base64DecodeText` if you want text back directly.
+4. If you were matching on `E0067` expecting "invalid UTF-8," that's `E0140` from `std.encoding` now. `E0067` means malformed JSON.
+5. Building on Windows from source no longer goes through CMake — use `build.ps1`.
+
+---
+
 # Lunex changelog — 0.9.3 → 0.9.4
 
 Smaller than 0.9.3, but it touches a lot of the core. Most of it is finishing things I started last time (`watch`, destructuring, packing), plus three new pieces: native code for functions, a `std.image` module, and a WebAssembly build.

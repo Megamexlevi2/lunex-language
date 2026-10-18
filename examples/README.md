@@ -18,16 +18,16 @@ lunex pack <file.lx>
 | 03_structs.lx             | Factory functions, structs with methods |
 | 04_control_flow.lx        | if/else, while, each, guard, unless |
 | 05_stdlib.lx              | math, string methods, utils |
-| 06_channels.lx            | spawn, channel, fan-out workers |
+| 06_tasks.lx               | Task handles, task groups, and parallel map |
 | 07_pattern_matching.lx    | match, if/else classification |
 | 08_http_server.lx         | HTTP server (blocking — run separately) |
-| 09_crypto.lx              | sha256, md5, hmac, base64, encrypt/decrypt |
+| 09_crypto.lx              | sha256, md5, hmac, encrypt/decrypt, std.encoding Base64 |
 | 10_database.lx            | std.db: table, insert, find, update, delete |
 | 11_fs.lx                  | readFile, writeFile, appendFile, stat |
 | 12_datetime.lx            | now, parse, format, diff, fromTimestamp |
 | 13_arrays_strings.lx      | Array and string methods |
 | 14_os.lx                  | platform, arch, exec, getenv/setenv |
-| 15_spawn.lx               | Concurrent workers sending results over channels |
+| 15_tasks.lx               | Concurrent workers with task groups and awaitable results |
 | 16_events.lx              | Event emitter pattern (on, once, emit, off) |
 | 17_structs_composition.lx | Struct composition, polymorphism via factory fns |
 | 18_loops.lx               | Summation, primes, fibonacci, nested loops |
@@ -46,6 +46,7 @@ lunex pack <file.lx>
 - String methods are called directly on the value: `s.toUpperCase()`, `s.split(",")`, `s.length`
 - Lunex has no `return` keyword — the last expression in a function is its result
 - `match` supports literal values and `_` wildcard; use `if/else if` chains for ranges
+- Use `new.task`, `tasks.all`, `tasks.any`, and `parallel.map` for language-level concurrency
 - `crypto.hmac(algo, key, msg)` — e.g. `crypto.hmac("sha256", key, msg)`
 - HTTP server: `http.createServer(handler)` then `server.listen(port, host, cb)`
 - HTTP routing: `std.http.router` — `router.create([router.get("/users/:id", handler)])` then `api.listen(port)`

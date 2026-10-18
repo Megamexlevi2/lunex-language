@@ -50,6 +50,7 @@ type jitFunctionState struct {
 	tier1      *jit.Program
 	tier2Tried bool
 	never      bool
+	taskNever  bool
 }
 
 type nativeFunctionFrames struct {
@@ -130,6 +131,12 @@ func (interp *Interpreter) selectJIT(node *ast.Node) (*jit.Program, bool) {
 		return nil, true
 	}
 	if state.current != nil {
+		if state.current.UsesMathObject && !interp.nativeMathUnmodified() {
+			_ = state.current.Close()
+			state.current = nil
+			state.never = true
+			return nil, true
+		}
 		return state.current, false
 	}
 	state.hits++
@@ -145,6 +152,11 @@ func (interp *Interpreter) selectJIT(node *ast.Node) (*jit.Program, bool) {
 		if nativeTrace {
 			fmt.Fprintf(os.Stderr, "lunex native: loop at line %d rejected: %v\n", node.Line, err)
 		}
+		return nil, true
+	}
+	if program.UsesMathObject && !interp.nativeMathUnmodified() {
+		_ = program.Close()
+		state.never = true
 		return nil, true
 	}
 	state.current = program
@@ -181,6 +193,16 @@ func (interp *Interpreter) selectFunctionJIT(fn *Function, body *ast.Node) (*jit
 		tier2Limit = 32
 	}
 	if state.current != nil {
+		if state.current.UsesMathObject && !interp.nativeMathUnmodified() {
+			_ = state.current.Close()
+			if state.tier1 != nil && state.tier1 != state.current {
+				_ = state.tier1.Close()
+			}
+			state.current = nil
+			state.tier1 = nil
+			state.never = true
+			return nil, state, true
+		}
 		if state.current.Tier < 2 && state.hits >= tier2Limit && !state.tier2Tried {
 			state.tier2Tried = true
 			if !state.current.Recursive {
@@ -190,7 +212,11 @@ func (interp *Interpreter) selectFunctionJIT(fn *Function, body *ast.Node) (*jit
 				}
 				tier2, err := jit.CompileFunction(body, fn.Name, paramSlots, 2)
 				if err == nil {
-					state.current = tier2
+					if tier2.UsesMathObject && !interp.nativeMathUnmodified() {
+						_ = tier2.Close()
+					} else {
+						state.current = tier2
+					}
 				} else if nativeTrace {
 					fmt.Fprintf(os.Stderr, "lunex native: function %s tier 2 rejected: %v\n", fn.Name, err)
 				}
@@ -211,6 +237,11 @@ func (interp *Interpreter) selectFunctionJIT(fn *Function, body *ast.Node) (*jit
 		if nativeTrace {
 			fmt.Fprintf(os.Stderr, "lunex native: function %s rejected: %v\n", fn.Name, err)
 		}
+		return nil, state, true
+	}
+	if tier1.UsesMathObject && !interp.nativeMathUnmodified() {
+		_ = tier1.Close()
+		state.never = true
 		return nil, state, true
 	}
 	state.tier1 = tier1
@@ -505,7 +536,7 @@ func (interp *Interpreter) runJITSetup(node *ast.Node, env *Environment, repeatR
 			return true, false, err
 		}
 		runtimeNode := jitErrorNode(program, ctx.ErrorNode)
-		msg := fmt.Sprintf("execution budget exceeded after %d steps; possible infinite loop, runaway recursion, or unbounded spawn", interp.maxExecSteps)
+		msg := fmt.Sprintf("execution budget exceeded after %d steps; possible infinite loop, runaway recursion, or unbounded task creation", interp.maxExecSteps)
 		return true, false, interp.runtimeError(errfmt.KindTimeout, errfmt.ErrTimeout, msg, runtimeNode, []string{
 			"add a terminating condition or reduce the amount of work per run",
 			"limit recursive calls, loops, and background tasks",

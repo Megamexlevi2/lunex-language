@@ -1,0 +1,52 @@
+val io = @import("std.io")
+
+fn square(n) {
+  n * n
+}
+
+fn describe(item) {
+  struct {
+    name = item.name
+    score = item.score * item.score
+  }
+}
+
+fn main() {
+  val first = new.task(square, 12)
+  val second = new.task(square, 7)
+  val pair = tasks.all([first, second])
+
+  if pair.length != 2 { throw "tasks.all must return one result per task" }
+  if pair[0] != 144 { throw "tasks.all returned the wrong first result" }
+  if pair[1] != 49 { throw "tasks.all returned the wrong second result" }
+  if first.state() != "completed" { throw "awaited task must be completed" }
+  if first.done() != true { throw "completed task must report done" }
+  if first.cancel() != false { throw "completed task must not be cancellable" }
+
+  val candidates = [new.task(square, 9), new.task(square, 10)]
+  val fastest = tasks.any(candidates)
+  if fastest.index == 0 {
+    if fastest.value != 81 { throw "tasks.any returned an incorrect value for index 0" }
+  } else {
+    if fastest.index != 1 { throw "tasks.any returned an invalid task index" }
+    if fastest.value != 100 { throw "tasks.any returned an incorrect value for index 1" }
+  }
+
+  val mapped = parallel.map(square, [1, 2, 3, 4, 5])
+  if mapped.join(",") != "1,4,9,16,25" { throw "parallel.map returned incorrect numeric results" }
+  if parallel.map(square, []).length != 0 { throw "parallel.map must support empty arrays" }
+
+  val objectTask = new.task(describe, struct {
+    name = "Lunex"
+    score = 8
+  })
+  val result = objectTask.await()
+  if result.name != "Lunex" { throw "object task returned an incorrect name" }
+  if result.score != 64 { throw "object task returned an incorrect score" }
+
+  io.log("Task results:", pair[0], pair[1])
+  io.log("Completed task:", fastest.index, fastest.value)
+  io.log("Parallel map:", mapped)
+  io.log("Object result:", result.name, result.score)
+  io.log("PASS tasks example")
+}

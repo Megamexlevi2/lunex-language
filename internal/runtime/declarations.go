@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"lunex/internal/ast"
+	"lunex/internal/errfmt"
 )
 
 func (interp *Interpreter) execVarDecl(node *ast.Node, env *Environment) (*Value, error) {
@@ -44,22 +45,60 @@ func (interp *Interpreter) execFnDecl(node *ast.Node, env *Environment) (*Value,
 
 func (interp *Interpreter) execClassDecl(node *ast.Node, env *Environment) (*Value, error) {
 	MarkEscaped(env)
-	cls := &Class{
-		Name:          node.Name,
-		Methods:       make(map[string]*Function),
-		StaticMethods: make(map[string]*Function),
-		Env:           env,
+	var cls *Class
+	if node.Name != "" {
+		if existing, ok := env.GetLocal(node.Name); ok && existing != nil && existing.Tag == TypeClass {
+			cls = existing.ClsVal
+		}
 	}
+	if cls == nil {
+		cls = &Class{}
+	}
+	cls.Name = node.Name
+	cls.Super = nil
+	cls.Methods = make(map[string]*Function)
+	cls.StaticMethods = make(map[string]*Function)
+	cls.StaticFields = make(map[string]*Value)
+	cls.Fields = nil
+	cls.Env = env
 	if node.SuperClass != nil {
 		superVal, err := interp.evalExpr(node.SuperClass, env)
 		if err != nil {
 			return nil, err
 		}
-		if superVal.Tag == TypeClass {
-			cls.Super = superVal.ClsVal
+		if superVal == nil || superVal.Tag != TypeClass || superVal.ClsVal == nil {
+			return nil, interp.runtimeError(errfmt.KindType, "E0003", "a class can only extend another class", node.SuperClass, nil)
 		}
+		for parent := superVal.ClsVal; parent != nil; parent = parent.Super {
+			if parent == cls {
+				return nil, interp.runtimeError(errfmt.KindType, "E0003", "class inheritance cannot contain a cycle", node.SuperClass, nil)
+			}
+		}
+		cls.Super = superVal.ClsVal
 	}
 	for _, member := range node.Methods {
+		if member == nil || member.Name == "" {
+			continue
+		}
+		if member.Kind == "field" {
+			if member.IsStatic {
+				value := Undefined
+				if member.Init != nil {
+					fieldEnv := NewEnvironment(env)
+					fieldEnv.Define("this", ClassVal(cls), false)
+					var err error
+					value, err = interp.evalExpr(member.Init, fieldEnv)
+					ReleaseEnvironment(fieldEnv)
+					if err != nil {
+						return nil, err
+					}
+				}
+				cls.StaticFields[member.Name] = value
+			} else {
+				cls.Fields = append(cls.Fields, &ClassField{Name: member.Name, Init: member.Init, Env: env})
+			}
+			continue
+		}
 		fn := &Function{
 			Name:        member.Name,
 			Params:      paramsToFnParams(member.Params),
@@ -68,9 +107,6 @@ func (interp *Interpreter) execClassDecl(node *ast.Node, env *Environment) (*Val
 			DefClass:    cls,
 			SourceFile:  interp.filename,
 			SourceLines: interp.sourceLines,
-		}
-		if member.Init != nil {
-			fn.Body = member.Init
 		}
 		if member.IsStatic {
 			cls.StaticMethods[member.Name] = fn

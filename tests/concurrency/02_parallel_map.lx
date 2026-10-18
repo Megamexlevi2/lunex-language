@@ -1,0 +1,12 @@
+val io = @import("std.io")
+
+fn square(n) {
+  n * n
+}
+
+fn main() {
+  val results = parallel.map(square, [1, 2, 3, 4, 5])
+  if results.join(",") != "1,4,9,16,25" { throw "parallel.map returned incorrect values or ordering" }
+  if parallel.map(square, []).length != 0 { throw "parallel.map must support an empty array" }
+  io.log("PASS parallel_map")
+}

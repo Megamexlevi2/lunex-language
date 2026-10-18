@@ -117,8 +117,7 @@ func (interp *Interpreter) evalNumberCached(node *ast.Node) (*Value, error) {
 	if err != nil {
 		return val, err
 	}
-	f := val.NumVal
-	node.NumCache = &f
+	interp.numCache.Store(node, val.NumVal)
 	return val, nil
 }
 

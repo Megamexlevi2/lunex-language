@@ -36,7 +36,6 @@ const (
 	DeferStmt     NodeType = "DeferStmt"
 	MatchStmt     NodeType = "MatchStmt"
 	TryStmt       NodeType = "TryStmt"
-	SpawnStmt     NodeType = "SpawnStmt"
 	SelectStmt    NodeType = "SelectStmt"
 	WithStmt      NodeType = "WithStmt"
 	AssertStmt    NodeType = "AssertStmt"
@@ -73,7 +72,6 @@ const (
 	TrySafeExpr   NodeType = "TrySafeExpr"
 	RangeExpr     NodeType = "RangeExpr"
 	SleepExpr     NodeType = "SleepExpr"
-	ChannelExpr   NodeType = "ChannelExpr"
 	NaxImportExpr NodeType = "NaxImportExpr"
 	AtImportExpr  NodeType = "AtImportExpr"
 	StructLit     NodeType = "StructLit"
@@ -158,17 +156,12 @@ type Node struct {
 	SuperClass    *Node
 	URL           string
 	BindingName   string
-	Channel       *Node
 	CatchParam    string
 	CatchBlock    *Node
 	FinallyBlock  *Node
 	Guard         *Node
 	Binding       string
 	SelectCases   []*SelectCase
-
-	NumCache *float64
-
-	NeedsScopeCache *bool
 
 	ScopeInfo *ScopeInfo
 
@@ -259,6 +252,6 @@ type ClassMember struct {
 
 type SelectCase struct {
 	Binding string
-	Channel *Node
+	Expr    *Node
 	Body    *Node
 }

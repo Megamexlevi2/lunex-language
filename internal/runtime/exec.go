@@ -205,9 +205,9 @@ func valueToGo(v *Value) interface{} {
 	}
 }
 
-func blockNeedsOwnScope(node *ast.Node) bool {
-	if node.NeedsScopeCache != nil {
-		return *node.NeedsScopeCache
+func (interp *Interpreter) blockNeedsOwnScope(node *ast.Node) bool {
+	if cached, ok := interp.scopeCache.Load(node); ok {
+		return cached.(bool)
 	}
 	needs := false
 	for _, stmt := range node.Body_ {
@@ -224,8 +224,8 @@ func blockNeedsOwnScope(node *ast.Node) bool {
 			break
 		}
 	}
-	node.NeedsScopeCache = &needs
-	return needs
+	actual, _ := interp.scopeCache.LoadOrStore(node, needs)
+	return actual.(bool)
 }
 
 func (interp *Interpreter) execBlock(stmts []*ast.Node, env *Environment) (*Value, error) {
@@ -257,7 +257,7 @@ func (interp *Interpreter) execNode(node *ast.Node, env *Environment) (*Value, e
 	case ast.Program:
 		return interp.execBlock(node.Body_, env)
 	case ast.Block:
-		if !blockNeedsOwnScope(node) {
+		if !interp.blockNeedsOwnScope(node) {
 
 			return interp.execBlock(node.Body_, env)
 		}
@@ -333,13 +333,6 @@ func (interp *Interpreter) execNode(node *ast.Node, env *Environment) (*Value, e
 		return interp.execGuard(node, env)
 	case ast.DeferStmt:
 		interp.defers = append(interp.defers, deferEntry{node: node, env: env})
-		return Undefined, nil
-	case ast.SpawnStmt:
-		MarkEscaped(env)
-		go func() {
-			defer func() { recover() }()
-			interp.evalExpr(node.Expr, env)
-		}()
 		return Undefined, nil
 	case ast.AssertStmt:
 		return interp.execAssert(node, env)

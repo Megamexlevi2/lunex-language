@@ -40,7 +40,7 @@ cd lunex-language
 ./build.sh
 ```
 
-This produces a `lunex` binary in the project root.
+This produces a `lunex` binary in the project root. Use `build-termux.sh` for Android/Termux and `build-webasembly.sh` for a WebAssembly build.
 
 ### 3. Run the examples to verify nothing is broken
 
@@ -58,14 +58,20 @@ Key directories:
 |------|----------|
 | `internal/lexer/` | Tokenizer |
 | `internal/parser/` | AST builder |
+| `internal/checker/` | Static checks |
 | `internal/runtime/` | Tree-walking interpreter |
 | `internal/bytecode/` | Archive compiler and VM |
+| `internal/jit/` | JIT compilation |
 | `internal/std/` | Standard library modules |
 | `internal/errfmt/` | Error formatting and error codes |
 | `internal/compiler/` | Source compiler pipeline |
 | `internal/formatter/` | `lunex fmt` pretty-printer |
+| `internal/lsp/` | Language server |
+| `internal/pkg/` | Package manager (install/add/resolve) |
+| `internal/resolver/` | Module/import resolution |
 | `examples/` | Runnable example programs |
 | `tests/` | Manual test scripts |
+| `docs/` | Language reference, stdlib, CLI, and error documentation |
 
 ### 5. Style guidelines
 
@@ -83,41 +89,47 @@ Open a pull request against the `main` branch. Include a short description of wh
 ## Project structure
 
 ```
-lunex-lang-gz/
-├── cmd/lunex/             CLI entry point
-├── version.json            Version metadata (embedded at build time)
+lunex-language/
+├── cmd/
+│   ├── lunex/              CLI entry point
+│   └── lunexwasm/          WebAssembly entry point
 ├── build.sh                Build script (local and release)
 ├── build-termux.sh         Build script for Android/Termux
-├── install.sh              One-line installer
-├── install.ps1             Windows installer
+├── build-webasembly.sh     Build script for WebAssembly
 ├── go.mod / go.sum         Go module files
 ├── internal/
 │   ├── ast/                AST node definitions
-│   ├── lexer/              Tokenizer
-│   ├── parser/             Parser
-│   ├── compiler/           Source compiler
-│   ├── bytecode/           Archive format, VM, cache
-│   ├── runtime/            Tree-walking interpreter
-│   ├── std/                Standard library (one file per module)
-│   ├── errfmt/             Error codes, formatting, catalog
-│   ├── formatter/          Source code formatter
-│   ├── meta/                Version metadata and integrity
-│   ├── app/                 CLI command implementations
-│   ├── pkg/                 Package manager (install/add/resolve)
-│   ├── manifest/            lunex.toml / lunex.lock parsing
-│   ├── buildfile/           Thin wrapper over manifest for build/start
-│   ├── toml/                 Minimal TOML reader/writer
-│   ├── semver/               Semantic version parsing and comparison
-│   ├── adaptor/              Platform adaptor (cache paths, markers)
-│   ├── firstrun/             First-run welcome animation
+│   ├── lexer/               Tokenizer
+│   ├── parser/               Parser
+│   ├── checker/              Static checks
+│   ├── compiler/             Source compiler
+│   ├── bytecode/             Archive format, VM, cache
+│   ├── jit/                  JIT compilation
+│   ├── runtime/              Tree-walking interpreter
+│   ├── std/                  Standard library (one file per module)
+│   ├── errfmt/                Error codes, formatting, catalog
+│   ├── formatter/             Source code formatter
+│   ├── lsp/                   Language server
+│   ├── meta/                  Version metadata and integrity
+│   ├── app/                   CLI command implementations
+│   ├── pkg/                   Package manager (install/add/resolve)
+│   ├── resolver/              Module/import resolution
+│   ├── manifest/              lunex.toml / lunex.lock parsing
+│   ├── buildfile/             Thin wrapper over manifest for build/start
+│   ├── toml/                  Minimal TOML reader/writer
+│   ├── semver/                Semantic version parsing and comparison
+│   ├── adaptor/               Platform adaptor (cache paths, markers)
+│   ├── firstrun/              First-run welcome animation
 │   └── debug/                 Debug/verbose logging
-├── examples/               23 runnable example programs
-├── tests/                  Manual test scripts
+├── examples/                Runnable example programs
+├── tests/                   Manual test scripts
+├── docs/                    Language reference, stdlib, CLI, and error docs
+├── lunex-cli/               CLI helper module (packaged Lunex library)
+├── lune-xml/                XML module (packaged Lunex library)
 ├── LICENSE
-├── CHANGELOG.md
 ├── CONTRIBUTING.md
 ├── README.md
-└── modulesys.md            Module system reference
+└── modulesys.md             Module system reference
 ```
 
 ---

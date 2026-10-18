@@ -1,0 +1,15 @@
+val io = @import("std.io")
+
+fn double(n) {
+  n * 2
+}
+
+fn main() {
+  val task = new.task(double, 21)
+  val result = task.await()
+  if result != 42 { throw "task.await returned an incorrect value" }
+  if task.done() != true { throw "completed task must report done" }
+  if task.state() != "completed" { throw "completed task must report its state" }
+  if task.cancel() != false { throw "completed task must not be cancellable" }
+  io.log("PASS task_basic")
+}

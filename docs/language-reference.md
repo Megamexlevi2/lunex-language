@@ -9,7 +9,11 @@ Complete reference for the Lunex programming language, version 0.9.4.
 ### Comments
 
 ```lx
-//
+/! Single-line comment
+
+/*
+Multi-line comment
+/*
 ```
 
 ### Identifiers
@@ -25,7 +29,7 @@ myVar   _private   score99   HTTP_PORT
 
 ```
 val var fn struct if else elif guard unless while watch each in for
-loop repeat do break continue match case default when defer spawn channel
+loop repeat do break continue match case default when defer
 try catch finally throw raise enum namespace component import export from
 require module as extends new this super interface implements trait typeof
 instanceof keyof infer alias void undefined range sleep have ifhave ifset
@@ -45,8 +49,8 @@ sections below document the ones with confirmed, working behavior.
 > unknown identifier. The last expression in a function body is always its
 > result — there is no way to return early from the middle of a function
 > body other than by structuring the code (e.g. with `if`/`else` producing
-> the value on every branch). `class` gets the same treatment: it's
-> rejected with a hint to use `val TypeName = struct { ... }` instead.
+> the value on every branch). The removed `use` declaration is rejected; use
+> `val name = @import("std.module")` instead.
 
 ### Literals
 
@@ -114,7 +118,7 @@ Lunex is dynamically typed. The runtime types are:
 | `object`   | key-value map                       |
 | `struct`   | object with methods                 |
 | `function` | first-class callable                |
-| `channel`  | concurrent message-passing channel  |
+| `task`     | asynchronous task handle             |
 
 Use `typeof(v)` anywhere to inspect a value's type at runtime:
 
@@ -198,7 +202,6 @@ These are available everywhere without an import:
 | `isNaN(v)`        | True if the value is NaN                      |
 | `isFinite(v)`     | True if the value is a finite number          |
 | `len(v)`          | Length of an array, string, or object         |
-| `channel()`       | Create an unbuffered concurrent channel       |
 
 ```lx
 str(42)          
@@ -238,10 +241,10 @@ Global `print(...)`, `println(...)`, and `log(...)` output functions are not par
 | `btoa(s)` / `atob(s)`                                    | Base64 encode/decode                                                                 |
 
 > **Known limitations of the JS-compatibility layer:**
-> - `Promise.all(arr)` does not actually await or resolve anything — it
->   returns the input array unchanged. There is no real async scheduling
->   behind these globals; don't rely on `Promise` for real concurrency, use
->   `spawn`/`channel()` instead (see [Concurrency](#concurrency)).
+> - `Promise.all(arr)` waits for Lunex task handles and preserves input order,
+>   but accepts arrays only and is not a complete JavaScript Promise
+>   implementation. It does not support iterables or thenable assimilation.
+>   See [Concurrency](#concurrency) for the native task API.
 > - `clearTimeout(id)` is a complete no-op — it never cancels a pending
 >   `setTimeout`. `clearInterval(id)` does work correctly.
 > - `process.env` and `process.argv` are always empty (an empty object and
@@ -626,8 +629,8 @@ No import needed — strings have these built in:
 
 ## Structs
 
-A `struct` is a value with named fields and methods. Factory functions are the
-standard way to create structs in Lunex — no `class` keyword needed.
+A `struct` is a value with named fields and methods. Factory functions are a
+convenient way to create structs in Lunex.
 
 ```lx
 fn Counter(start) {
@@ -676,38 +679,125 @@ val user = struct {
 io.log(user.name)  
 ```
 
----
-
 ## Concurrency
 
-### `channel()`
+Lunex concurrency is based on task handles. Create work with `new.task`, wait
+for results with `await()`, coordinate task groups with `tasks.all` and
+`tasks.any`, or distribute an array across workers with `parallel.map`.
 
-Creates an unbuffered FIFO channel:
+### `new.task(fn, ...args)`
+
+Schedules a function call in the Lunex task runtime and returns a task handle.
+The function arguments are passed to the function when the task runs.
 
 ```lx
-val ch = channel()
+val io = @import("std.io")
+
+fn calculate(n) {
+  n * n
+}
+
+val task = new.task(calculate, 21)
+val result = task.await()
+io.log(result)
 ```
 
-### `ch.send(value)` / `ch.recv()`
+The runtime attempts native JIT compilation when the function and arguments
+match the supported numeric compilation path. Other functions, including
+functions that operate on objects, execute through the interpreter on a task
+worker. Native compilation is not guaranteed for every function.
 
-`send` blocks until a receiver is ready. `recv` blocks until a sender sends.
+### Task handles
+
+| Method | Behavior |
+|--------|----------|
+| `task.await()` | Wait for completion and return the result. Task errors are propagated. |
+| `task.done()` | Return `true` when the task has finished, failed, or been cancelled. |
+| `task.state()` | Return `pending`, `running`, `completed`, `failed`, or `cancelled`. |
+| `task.cancel()` | Cancel a task only while it is pending. Returns whether cancellation succeeded. |
+
+Cancellation does not interrupt a task that is already running.
+
+### `tasks.all(tasks)`
+
+Returns results in the same order as the input task handles. It waits for all
+tasks to succeed; if a task fails, the error is propagated immediately. An
+empty array returns an empty array.
 
 ```lx
-spawn fn() {
-  ch.send(compute())
-}()
+val io = @import("std.io")
 
-val result = ch.recv()
+fn square(n) {
+  n * n
+}
+
+val handles = [new.task(square, 2), new.task(square, 3), new.task(square, 4)]
+val results = tasks.all(handles)
+io.log(results)
 ```
 
-### `spawn`
+### `tasks.any(tasks)`
 
-Launches a function call in a new goroutine:
+Waits until at least one task has completed and returns an object with its input
+`index` and result `value`. If several tasks are complete when checked, the
+lowest input index wins. An empty array returns
+`{ index: -1, value: undefined }`. If the selected task failed, its error is
+propagated.
 
 ```lx
-spawn fn() {
-  heavyWork()
-}()
+val io = @import("std.io")
+
+fn square(n) {
+  n * n
+}
+
+val handles = [new.task(square, 5), new.task(square, 6)]
+val winner = tasks.any(handles)
+io.log(winner.index, winner.value)
+```
+
+### `parallel.map(fn, values)`
+
+Runs a function over the elements of an array using the task runtime and returns
+an array in input order. An empty input array returns an empty array. Errors
+from the work are propagated. Eligible numeric functions can use the JIT path;
+other functions use the interpreter.
+
+```lx
+val io = @import("std.io")
+
+fn square(n) {
+  n * n
+}
+
+val squares = parallel.map(square, [1, 2, 3, 4, 5])
+io.log(squares)
+```
+
+### `select`
+
+`select` waits for task handles and executes the body associated with the first
+completed task it observes. If multiple tasks are already complete when checked,
+the earliest case in source order wins. Each case can bind the task's result.
+
+```lx
+val io = @import("std.io")
+
+fn square(n) {
+  n * n
+}
+
+val first = new.task(square, 8)
+val second = new.task(square, 9)
+
+select {
+  case value = first => {
+    io.log("First completed:", value)
+  }
+  case value = second => {
+    io.log("First completed:", value)
+  }
+}
 ```
 
 ---

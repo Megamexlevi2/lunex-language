@@ -535,10 +535,6 @@ val hmac = crypto.hmac("sha256", "my-secret-key", "Hello, Lunex!")
 
 | Function                    | Description                            |
 |-----------------------------|----------------------------------------|
-| `crypto.base64Encode(s)`    | Standard Base64 encode                 |
-| `crypto.base64Decode(s)`    | Standard Base64 decode                 |
-| `crypto.base64UrlEncode(s)` | URL-safe Base64 encode (no padding)    |
-| `crypto.base64UrlDecode(s)` | URL-safe Base64 decode                 |
 | `crypto.toHex(s)`           | Convert bytes to hex string            |
 | `crypto.fromHex(s)`         | Convert hex string to bytes            |
 
@@ -580,6 +576,8 @@ val plaintext  = crypto.decrypt(ciphertext, key)
 
 ### JWT (embedded in crypto)
 
+`std.crypto` keeps Base64 only for its internal cryptographic formats. Use `std.encoding` for Base64/Base32, character encodings, and URL percent encoding.
+
 `std.crypto` also exposes a `jwt` sub-object:
 
 ```lx
@@ -601,6 +599,41 @@ val raw     = crypto.jwt.decode(token)
 For the dedicated JWT module, see `std.jwt` below.
 
 ---
+
+## `std.encoding` — Text and byte encodings
+
+```lunex
+val encoding = @import("std.encoding")
+val io = @import("std.io")
+
+val bytes = encoding.utf8Encode("Lunex ✓")
+val text = encoding.utf8Decode(bytes, true)
+val base64 = encoding.base64Encode(text)
+val base64Text = encoding.base64DecodeText(base64)
+val urlPart = encoding.percentEncode("hello world/✓")
+val urlText = encoding.percentDecode(urlPart)
+```
+
+`std.encoding` provides encoding and decoding utilities as part of the standard library. Byte encoders return arrays of integers in the inclusive range 0–255. Decoders accept those arrays or a `std.buffer` value. Base64 and Base32 decoders return byte arrays; the `*DecodeText` helpers decode the bytes as UTF-8 text.
+| Function | Behavior |
+|---|---|
+| `encoding.utf8Encode(text)` / `utf8Decode(bytes, fatal?)` | I let you encode text into UTF-8 bytes and decode those bytes back into text. By default, I replace invalid sequences with U+FFFD. Set `fatal=true` to reject invalid UTF-8 instead. |
+| `encoding.utf16Encode(text, endian?, bom?)` / `utf16Decode(bytes, endian?, fatal?)` | I support UTF-16 encoding and decoding with `le`, `be`, or `auto` endianness. When encoding, I default to little-endian without a BOM. When decoding, I detect the BOM when present and default to little-endian when no BOM is found. |
+| `encoding.utf32Encode(text, endian?, bom?)` / `utf32Decode(bytes, endian?, fatal?)` | I support UTF-32 encoding and decoding with the same endianness and BOM rules as UTF-16. |
+| `encoding.latin1Encode(text)` / `latin1Decode(bytes)` | I let you encode and decode text using ISO-8859-1. When encoding, I reject characters outside the U+0000–U+00FF range because Latin-1 cannot represent them. |
+| `encoding.base64Encode(input, urlSafe?, padding?)` / `base64Decode(text, urlSafe?)` | I provide Base64 encoding and decoding. You can pass text, a byte array, or a buffer as input. Decoding returns a byte array. You can also enable URL-safe encoding or omit padding when needed. |
+| `encoding.base64DecodeText(text, fatal?)` | I decode Base64 into bytes and then interpret those bytes as UTF-8 text. |
+| `encoding.base64UrlEncode(input, padding?)` / `base64UrlDecode(text)` | I provide URL-safe Base64 using `-` and `_` instead of the standard Base64 characters. I omit padding by default, but you can enable it when encoding. |
+| `encoding.base64UrlDecodeText(text, fatal?)` | I decode URL-safe Base64 into bytes and convert those bytes into UTF-8 text. |
+| `encoding.base32Encode(input, padding?)` / `base32Decode(text)` | I implement RFC 4648 Base32 using the `A–Z` and `2–7` alphabet. My decoder accepts lowercase input and returns a byte array. |
+| `encoding.base32DecodeText(text, fatal?)` | I decode Base32 into bytes and interpret the result as UTF-8 text. |
+| `encoding.percentEncode(text)` / `percentDecode(text)` | I provide RFC 3986 percent-encoding and decoding for URL components using UTF-8. I encode spaces as `%20` and do not treat `+` as a space. |
+| `encoding.formEncode(text)` / `formDecode(text)` | I support `application/x-www-form-urlencoded` encoding and decoding. Unlike regular percent-encoding, I represent spaces as `+`. |
+| `encoding.encode(text, format?)` / `decode(input, format?, fatal?)` | I provide convenient functions for choosing an encoding format without calling a format-specific function directly. I support `utf8`, `utf16le`, `utf16be`, `utf32le`, `utf32be`, `latin1`, `base64`, `base64url`, `base32`, `url`, and `form`. My `encode` function returns bytes for Unicode and Latin-1 encodings, and a string for Base64, Base32, and URL formats. My `decode` function returns text. When you need raw decoded Base64 or Base32 bytes, use the corresponding format-specific decoding function. |
+
+I raise `E0140` when I encounter malformed bytes, invalid padding, unsupported format names, invalid percent escapes, unsupported endianness, or characters that cannot be represented in Latin-1.
+
+By default, I replace invalid Unicode sequences with replacement characters wherever the decoder supports that behavior. Set `fatal=true` to reject malformed UTF-8, invalid UTF-16 surrogate sequences, or invalid UTF-32 code points. Regardless of the strictness option, I reject UTF-16 and UTF-32 inputs that end with an incomplete code unit.
 
 ## `std.fs` — File system
 
@@ -1042,6 +1075,137 @@ Anything that isn't a regular file inside `root` gets a `404`. Paths with
 `..` segments, backslashes or NUL bytes are refused, and so are symbolic links
 that point outside `root`. The content type comes from the file extension, and
 range and conditional requests work.
+
+---
+
+## `std.net` — TCP, UDP, TLS, DNS, and IP addresses
+
+```lx
+val net = @import("std.net")
+```
+
+`std.net` provides stream connections, packet connections, TLS, DNS queries,
+IP and CIDR utilities, and network-interface information. Network operations
+are synchronous. Pass `timeoutMs` in an options object to bound dialing or DNS
+lookups; `timeout` is accepted as an alias. All deadline and timeout values are
+in milliseconds. Connections and listeners should be closed when they are no
+longer needed.
+
+### Connections and listeners
+
+| Function | Description |
+|---|---|
+| `net.dial(network, address, options?)` | Connect using `tcp`, `tcp4`, `tcp6`, `udp`, `udp4`, `udp6`, `unix`, `unixgram`, or `unixpacket`. |
+| `net.dialTimeout(network, address, timeoutMs)` | Connect with a specific timeout in milliseconds. |
+| `net.dialTCP(address, options?)` | Open a TCP connection using a `host:port` address. |
+| `net.dialTCP(host, port, options?)` | Open a TCP connection using a host and integer port. |
+| `net.dialUDP(address, options?)` | Open a connected UDP socket. The host/port form is also supported. |
+| `net.listen(network, address)` | Listen using `tcp`, `tcp4`, `tcp6`, `unix`, or `unixpacket`. |
+| `net.listenTCP(address)` | Create a TCP listener; `net.listenTCP(host, port)` is also supported. |
+| `net.listenPacket(network, address)` | Listen using `udp`, `udp4`, `udp6`, or `unixgram`. |
+| `net.listenUDP(address)` | Create a UDP listener; `net.listenUDP(host, port)` is also supported. |
+| `net.dialTLS(network, address, options?)` | Connect with TLS 1.2 or newer. Options: `timeoutMs`, `serverName`, `caFile`, `clientCertFile`, `clientKeyFile`, and `insecureSkipVerify`. Certificate verification is enabled by default. |
+| `net.listenTLS(network, address, options)` | Create a TLS listener. `options.certFile` and `options.keyFile` are required PEM file paths. TLS 1.2 or newer is used. |
+
+A connection returned by `dial`, `dialTCP`, `dialUDP`, or `dialTLS` has these
+methods:
+
+| Method | Returns | Description |
+|---|---|---|
+| `conn.read(size?)` | string | Read up to `size` bytes, defaulting to 4096. A read may return fewer bytes than requested. |
+| `conn.readBytes(size?)` | array | Read bytes as integers from 0 to 255. |
+| `conn.readFull(size)` | string | Read exactly `size` bytes or raise an error if the stream ends or times out first. |
+| `conn.readLine()` | string | Read through the next newline and remove the trailing line break. |
+| `conn.write(data)` | number | Write a string or byte array and return the number of bytes written. |
+| `conn.writeBytes(bytes)` | number | Write an array of byte values. |
+| `conn.close()` | — | Close the connection. Repeated calls are safe. |
+| `conn.isClosed()` | boolean | Check whether the connection was locally closed. |
+| `conn.localAddr()` / `conn.remoteAddr()` | string | Return the local or peer address. |
+| `conn.setDeadline(ms)` | — | Set both read and write deadlines relative to the current time. `0` clears the deadline. |
+| `conn.setReadDeadline(ms)` / `conn.setWriteDeadline(ms)` | — | Set an individual deadline; `0` clears it. |
+| `conn.setNoDelay(enabled)` | — | Set TCP_NODELAY. TCP connections only. |
+| `conn.setKeepAlive(enabled)` | — | Enable or disable TCP keep-alive. TCP connections only. |
+| `conn.setKeepAlivePeriod(ms)` | — | Set the TCP keep-alive period. TCP connections only. |
+| `conn.tlsState()` | object or `null` | Get the negotiated TLS version, server name, cipher suite, and peer certificate summaries. |
+
+A listener returned by `listen`, `listenTCP`, or `listenTLS` provides
+`accept()`, `address()`, `addr()`, `close()`, and `isClosed()`. `address()`
+returns its address as a string. `addr()` returns an object with `network` and
+`address` fields. `accept()` blocks until a peer connects or the listener is
+closed. Listeners backed by TCP or Unix sockets also support `setDeadline(ms)`
+to bound a future `accept()` call; `0` clears that deadline.
+
+A packet connection returned by `listenPacket` or `listenUDP` provides
+`readFrom(size?)`, `readBytesFrom(size?)`, `writeTo(data, address)`, `localAddr()`,
+`addr()`, `setDeadline(ms)`, `close()`, and `isClosed()`. Reads default to a
+65535-byte buffer and return an object containing `data`, `bytesRead`, `address`,
+`host`, `port`, and `network`. `readBytesFrom` returns `data` as an array of
+byte values. `writeTo` accepts a destination in `host:port` form.
+
+### DNS and local interfaces
+
+| Function | Description |
+|---|---|
+| `net.lookupIP(host, options?)` | Resolve a hostname to a de-duplicated array of IP address strings. |
+| `net.lookupHost(host, options?)` | Alias for `lookupIP`. |
+| `net.lookupAddr(address, options?)` | Perform reverse DNS lookup for a valid IP literal. `reverseLookup` is an alias. |
+| `net.lookupCNAME(host, options?)` | Resolve the canonical DNS name. |
+| `net.lookupPort(network, service)` | Resolve a service name, such as `"http"` on `"tcp"`, to a port number. |
+| `net.lookupMX(host, options?)` | Return mail exchanger records with `host` and `preference`. |
+| `net.lookupNS(host, options?)` | Return name-server records with `host`. |
+| `net.lookupTXT(host, options?)` | Return TXT record strings. |
+| `net.lookupSRV(service, proto, host, options?)` | Return `{ cname, records }`; each record has `target`, `port`, `priority`, and `weight`. |
+| `net.hostname()` | Return the operating-system hostname. |
+| `net.interfaces()` | Return interface objects with `name`, `index`, `mtu`, `flags`, `hardwareAddr`, and `addresses`. |
+| `net.localIPs()` | Return unique non-loopback, non-unspecified local IP addresses. |
+
+DNS lookup options accept `timeoutMs` or `timeout`. DNS errors are raised as
+runtime errors rather than being silently converted into empty results.
+
+### IP addresses and CIDR
+
+| Function | Description |
+|---|---|
+| `net.parseIP(address)` | Return the normalized IP string, or `null` if invalid. |
+| `net.isIP(address)` | Return `4` for IPv4, `6` for IPv6, or `0` for an invalid address. |
+| `net.to4(address)` / `net.to16(address)` | Return the corresponding normalized address, or `null` when conversion fails. |
+| `net.joinHostPort(host, port)` | Join a host and string or integer port, correctly bracketing IPv6 hosts. |
+| `net.splitHostPort(address)` | Return an object with string fields `host` and `port`. |
+| `net.parseCIDR(cidr)` | Return `ip`, `network`, `prefix`, `bits`, and `broadcast` fields. Invalid CIDR input returns `null`; IPv6 `broadcast` is `null`. |
+| `net.containsCIDR(cidr, address)` | Test whether an IP address belongs to the CIDR network. Invalid CIDR input raises an error. |
+| `net.isPrivate(address)` | Check whether an address is in a private IP range. |
+| `net.isLoopback(address)` | Check whether an address is loopback. |
+| `net.isGlobalUnicast(address)` | Check whether an address is global-unicast according to the IP library. |
+| `net.isMulticast(address)` | Check whether an address is multicast. |
+| `net.isUnspecified(address)` | Check whether an address is unspecified. |
+| `net.isLinkLocalUnicast(address)` / `net.isLinkLocalMulticast(address)` | Check link-local address categories. |
+| `net.resolveTCPAddr(network, address)` | Parse a TCP endpoint and return its network and address fields plus IP, port, and zone. |
+| `net.resolveUDPAddr(network, address)` | Parse a UDP endpoint and return its network and address fields plus IP, port, and zone. |
+| `net.resolveIPAddr(network, address)` | Resolve an IP endpoint and return its network and address fields plus IP and zone. |
+
+### Example: TCP echo exchange
+
+```lx
+val net = @import("std.net")
+val listener = net.listenTCP("127.0.0.1", 0)
+val client = net.dialTCP(listener.address(), { timeoutMs: 2000 })
+val peer = listener.accept()
+client.setDeadline(2000)
+peer.setDeadline(2000)
+client.write("hello")
+val message = peer.readFull(5)
+peer.write("reply")
+val reply = client.readFull(5)
+peer.close()
+client.close()
+listener.close()
+```
+
+For `dialTLS`, `caFile` can provide a PEM trust bundle, while `clientCertFile`
+and `clientKeyFile` configure mutual TLS and must be provided together.
+Certificate validation remains enabled unless `insecureSkipVerify: true` is
+explicitly set. Disabling verification should be limited to controlled testing
+because it removes server certificate checks.
 
 ---
 
@@ -1665,7 +1829,8 @@ val os = @import("std.os")
 | `os.spawn(cmd, opts?)`        | object  | Run a command in the background             |
 
 `os.exec` returns `{ stdout, stderr, code, ok }`.
-`os.spawn` returns `{ pid, wait(), kill() }` — `wait()` blocks until the
+`os.spawn` starts an operating-system process; it is unrelated to Lunex task
+creation. It returns `{ pid, wait(), kill() }` — `wait()` blocks until the
 process exits and returns its exit code (a number), and does not capture
 `stdout`/`stderr`.
 

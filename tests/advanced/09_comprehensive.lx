@@ -14,29 +14,24 @@ fn Job(id, payload) {
     fn summary()  { "[" + this.id.slice(0, 8) + "] " + this.payload + " → " + this.status }
   }
 }
-fn processJob(job, ch) {
+fn processJob(payload) {
+  val job = Job(crypto.randomUUID(), payload)
   job.start()
   if math.random() > 0.2 { job.complete() } else { job.fail() }
-  ch.send(job)
+  job
 }
+
 fn main() {
   io.log("=== Lunex Integration Test ===")
   io.log("ts:", datetime.toTimestamp(datetime.now()))
   val defs = ["index-docs", "send-email", "compile-assets", "run-migrations", "warm-cache"]
-  val ch   = channel()
-  each def_ in defs {
-    val j = Job(crypto.randomUUID(), def_)
-    spawn fn() { processJob(j, ch) }()
-  }
-  var done   = 0
+  val jobs = parallel.map(processJob, defs)
+  var done = 0
   var failed = 0
-  var i      = 0
-  while i < 5 {
-    val j = ch.recv()
-    io.log(j.summary())
-    if j.status == "failed" { failed = failed + 1 }
+  each job in jobs {
+    io.log(job.summary())
+    if job.status == "failed" { failed = failed + 1 }
     done = done + 1
-    i    = i + 1
   }
   io.log("done:", done, "failed:", failed)
   io.log("=== PASS comprehensive ===")

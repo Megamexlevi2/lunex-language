@@ -97,7 +97,7 @@ type state struct {
 
 var builtinNames = map[string]bool{
 	"undefined": true, "null": true, "true": true, "false": true, "NaN": true, "Infinity": true,
-	"lunex": true, "parseInt": true, "parseFloat": true, "isNaN": true, "isFinite": true,
+	"lunex": true, "new": true, "parallel": true, "parseInt": true, "parseFloat": true, "isNaN": true, "isFinite": true,
 	"String": true, "str": true, "Number": true, "num": true, "Boolean": true,
 	"Array": true, "Object": true, "Math": true, "JSON": true, "Promise": true, "Error": true, "TypeError": true,
 	"RangeError": true, "Map": true, "Set": true, "setTimeout": true, "setInterval": true, "clearTimeout": true,
@@ -106,9 +106,9 @@ var builtinNames = map[string]bool{
 }
 
 var stdModules = map[string]bool{
-	"io": true, "fs": true, "http": true, "crypto": true, "db": true, "env": true, "testing": true, "ws": true,
+	"io": true, "fs": true, "http": true, "crypto": true, "db": true, "env": true, "encoding": true, "testing": true, "ws": true,
 	"utils": true, "json": true, "jwt": true, "math": true, "datetime": true, "os": true, "regex": true,
-	"buffer": true, "ints": true, "image": true, "runtime": true, "ffi": true, "internal.native": true,
+	"buffer": true, "ints": true, "image": true, "net": true, "runtime": true, "ffi": true, "internal.native": true,
 	"http/router": true, "http/static": true,
 }
 
@@ -505,14 +505,19 @@ func (c *Checker) checkNode(n *ast.Node, st *state) {
 		}
 	case ast.TryStmt:
 		c.checkNode(n.Body, st)
-		c.checkNode(n.CatchBlock, st)
-		c.checkNode(n.FinallyBlock, st)
-		if n.CatchParam != "" {
-			if _, ok := c.lookup(st.scope, n.CatchParam); !ok {
-				st.scope.symbols[n.CatchParam] = symbol{name: n.CatchParam, kind: symVar, line: n.Line, col: n.Col, mutable: true}
+		if n.CatchBlock != nil {
+			catchScope := &scope{parent: st.scope, symbols: make(map[string]symbol), kind: "catch"}
+			if n.CatchParam != "" {
+				catchScope.symbols[n.CatchParam] = symbol{name: n.CatchParam, kind: symVar, line: n.Line, col: n.Col, mutable: true}
+			}
+			catchState := *st
+			catchState.scope = catchScope
+			for _, statement := range n.CatchBlock.Body_ {
+				c.checkNode(statement, &catchState)
 			}
 		}
-	case ast.SpawnStmt, ast.AssertStmt, ast.HaveStmt, ast.WithStmt, ast.SelectStmt, ast.GuardStmt, ast.DeferStmt, ast.ThrowStmt, ast.RaiseStmt, ast.DeleteStmt:
+		c.checkNode(n.FinallyBlock, st)
+	case ast.AssertStmt, ast.HaveStmt, ast.WithStmt, ast.SelectStmt, ast.GuardStmt, ast.DeferStmt, ast.ThrowStmt, ast.RaiseStmt, ast.DeleteStmt:
 		c.checkNode(n.Expr, st)
 		c.checkNode(valueNode(n.Value), st)
 		c.checkNode(n.Body, st)
@@ -521,7 +526,7 @@ func (c *Checker) checkNode(n *ast.Node, st *state) {
 		c.checkNode(n.FinallyBlock, st)
 		for _, sc := range n.SelectCases {
 			if sc != nil {
-				c.checkNode(sc.Channel, st)
+				c.checkNode(sc.Expr, st)
 				c.checkNode(sc.Body, st)
 			}
 		}
@@ -543,7 +548,7 @@ func (c *Checker) checkNode(n *ast.Node, st *state) {
 			}
 		}
 		c.checkNode(n.Body, &fnState)
-	case ast.TypeofExpr, ast.DeleteExpr, ast.NotExpr, ast.UnaryExpr, ast.SleepExpr, ast.ChannelExpr, ast.SpreadExpr, ast.TernaryExpr, ast.LogicalExpr, ast.BinaryExpr, ast.PipelineExpr, ast.SequenceExpr, ast.RangeExpr, ast.StructLit, ast.ObjectLit, ast.ArrayLit, ast.NewExpr, ast.NaxImportExpr, ast.AtImportExpr, ast.DecoratedExpr, ast.SatisfiesExpr, ast.HaveExpr, ast.TrySafeExpr:
+	case ast.TypeofExpr, ast.DeleteExpr, ast.NotExpr, ast.UnaryExpr, ast.SleepExpr, ast.SpreadExpr, ast.TernaryExpr, ast.LogicalExpr, ast.BinaryExpr, ast.PipelineExpr, ast.SequenceExpr, ast.RangeExpr, ast.StructLit, ast.ObjectLit, ast.ArrayLit, ast.NewExpr, ast.NaxImportExpr, ast.AtImportExpr, ast.DecoratedExpr, ast.SatisfiesExpr, ast.HaveExpr, ast.TrySafeExpr:
 		c.checkExprChildren(n, st)
 	default:
 		c.checkExprChildren(n, st)
@@ -671,7 +676,6 @@ func (c *Checker) checkExprChildren(n *ast.Node, st *state) {
 	c.checkNode(n.Hi, st)
 	c.checkNode(n.Count, st)
 	c.checkNode(n.Ms, st)
-	c.checkNode(n.Channel, st)
 	c.checkNode(n.Guard, st)
 	c.checkNode(n.Declaration, st)
 	c.checkNode(n.Extends, st)

@@ -13,6 +13,7 @@ import (
 	dbg "lunex/internal/debug"
 	"lunex/internal/errfmt"
 	"lunex/internal/firstrun"
+	"lunex/internal/lsp"
 	"lunex/internal/manifest"
 	"lunex/internal/meta"
 	"lunex/internal/pkg"
@@ -72,8 +73,6 @@ func safeRecover() {
 func Run() {
 	defer safeRecover()
 	meta.Seal()
-	firstrun.Check(meta.Version())
-
 	args := os.Args[1:]
 	std.SetFFIEnabled(false)
 	args = consumeFFIOption(args)
@@ -106,6 +105,10 @@ func Run() {
 		args = filtered
 	}
 
+	if len(args) == 0 || args[0] != "lsp" {
+		firstrun.Check(meta.Version())
+	}
+
 	if len(args) == 0 {
 		printHelp()
 		return
@@ -113,6 +116,16 @@ func Run() {
 
 	cmd := args[0]
 	switch cmd {
+	case "lsp":
+		if len(args) > 1 && (args[1] == "--help" || args[1] == "-h") {
+			printCommandHelp("lsp")
+			return
+		}
+		if err := lsp.Run(); err != nil {
+			fmt.Fprintln(os.Stderr, "lunex lsp:", err)
+			os.Exit(1)
+		}
+
 	case "run":
 		if len(args) < 2 {
 			fmt.Fprintln(os.Stderr, "usage: lunex run <file.lx|file.nax> [--emit ast|ir]")
@@ -998,7 +1011,7 @@ func packCheckerLoader() checker.Loader {
 		resolved, ok := pkg.Resolve(path)
 		if !ok {
 			resolved = strings.TrimPrefix(path, "std.")
-			if !containsString([]string{"io", "fs", "http", "crypto", "db", "env", "testing", "ffi", "ws", "utils", "json", "jwt", "math", "datetime", "os", "regex", "buffer", "ints", "image", "runtime", "http.router", "http.static"}, resolved) {
+			if !containsString([]string{"io", "fs", "http", "crypto", "db", "env", "encoding", "testing", "ffi", "ws", "utils", "json", "jwt", "math", "datetime", "os", "regex", "buffer", "ints", "image", "net", "runtime", "http.router", "http.static"}, resolved) {
 				return "", "", false
 			}
 			return "", "<std:" + resolved + ">", true
@@ -1291,7 +1304,7 @@ func checkFile(filePath string) {
 
 func checkerKnownModules(c *compiler.Compiler) map[string]map[string]struct{} {
 	known := make(map[string]map[string]struct{})
-	names := []string{"runtime", "io", "fs", "http", "crypto", "db", "env", "testing", "ffi", "ws", "utils", "json", "jwt", "math", "datetime", "os", "regex", "buffer", "ints", "image", "http/router", "http/static", "internal.native"}
+	names := []string{"runtime", "io", "fs", "http", "crypto", "db", "env", "encoding", "testing", "ffi", "ws", "utils", "json", "jwt", "math", "datetime", "os", "regex", "buffer", "ints", "image", "net", "http/router", "http/static", "internal.native"}
 	for _, name := range names {
 		mod, ok := c.Interpreter().GetModule(name)
 		if !ok || mod == nil || mod.ObjVal == nil {
@@ -1849,7 +1862,7 @@ func replWrap(src string) (string, bool) {
 
 func looksLikeDeclaration(src string) bool {
 	keywords := []string{
-		"fn ", "val ", "var ", "class ", "enum ", "namespace ",
+		"fn ", "val ", "var ", "enum ", "namespace ",
 		"@import", "@fimport",
 	}
 	for _, kw := range keywords {

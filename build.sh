@@ -118,31 +118,190 @@ runtime_ext_for_os() {
     esac
 }
 
+detect_distro_id() {
+    if [ -f /etc/os-release ]; then
+        awk -F= '/^ID=/{gsub(/"/, "", $2); print $2; exit}' /etc/os-release
+        return
+    fi
+    echo "unknown"
+}
+
+detect_package_manager() {
+    if command -v pkg >/dev/null 2>&1 && [ -n "${PREFIX:-}" ]; then
+        echo "pkg"
+        return
+    fi
+    if command -v apt >/dev/null 2>&1; then
+        echo "apt"
+        return
+    fi
+    if command -v apt-get >/dev/null 2>&1; then
+        echo "apt-get"
+        return
+    fi
+    if command -v dnf >/dev/null 2>&1; then
+        echo "dnf"
+        return
+    fi
+    if command -v yum >/dev/null 2>&1; then
+        echo "yum"
+        return
+    fi
+    if command -v pacman >/dev/null 2>&1; then
+        echo "pacman"
+        return
+    fi
+    if command -v apk >/dev/null 2>&1; then
+        echo "apk"
+        return
+    fi
+    if command -v zypper >/dev/null 2>&1; then
+        echo "zypper"
+        return
+    fi
+    if command -v brew >/dev/null 2>&1; then
+        echo "brew"
+        return
+    fi
+    echo ""
+}
+
+sudo_available() {
+    if [ "$(id -u 2>/dev/null || echo 1)" = "0" ]; then
+        return 1
+    fi
+    if ! command -v sudo >/dev/null 2>&1; then
+        return 1
+    fi
+    if sudo -n true 2>/dev/null; then
+        return 0
+    fi
+    if [ -t 0 ] && [ -t 1 ]; then
+        return 0
+    fi
+    return 1
+}
+
+package_manager_go_name() {
+    case "$1" in
+        pkg|apt|apt-get) echo "golang" ;;
+        dnf|yum)         echo "golang" ;;
+        pacman)          echo "go" ;;
+        apk)             echo "go" ;;
+        zypper)          echo "go" ;;
+        brew)            echo "go" ;;
+        *)               echo "go" ;;
+    esac
+}
+
+package_manager_install_cmd() {
+    local pm="$1"
+    local pkg_name="$2"
+    local use_sudo="$3"
+    local prefix=""
+    if [ "$use_sudo" = "1" ]; then
+        prefix="sudo "
+    fi
+    case "$pm" in
+        pkg)     echo "${prefix}pkg install -y $pkg_name" ;;
+        apt)     echo "${prefix}apt update && ${prefix}apt install -y $pkg_name" ;;
+        apt-get) echo "${prefix}apt-get update && ${prefix}apt-get install -y $pkg_name" ;;
+        dnf)     echo "${prefix}dnf install -y $pkg_name" ;;
+        yum)     echo "${prefix}yum install -y $pkg_name" ;;
+        pacman)  echo "${prefix}pacman -Sy --noconfirm $pkg_name" ;;
+        apk)     echo "${prefix}apk add $pkg_name" ;;
+        zypper)  echo "${prefix}zypper install -y $pkg_name" ;;
+        brew)    echo "brew install $pkg_name" ;;
+        *)       echo "" ;;
+    esac
+}
+
+prompt_yes_no() {
+    local question="$1"
+    local answer
+    if [ ! -t 0 ]; then
+        return 1
+    fi
+    read -r -p "$question [y/N] " answer
+    case "$answer" in
+        y|Y|yes|Yes|YES) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 install_go() {
     if command -v go >/dev/null 2>&1 && version_gte "$(go version | awk '{print $3}' | sed 's/go//')" "$GO_MIN"; then
         ok "Go $(go version | awk '{print $3}') is already installed"
         return
     fi
-    step "Installing Go $GO_MIN+"
-    local arch
-    arch=$(detect_arch)
-    local goos
-    goos=$(normalize_host_go_os "$(detect_os)")
-    local ver="1.25.14"
-    local name="go${ver}.${goos}-${arch}"
-    local url="https://go.dev/dl/${name}.tar.gz"
-    local tmp install_root
-    tmp="$(mktemp -d)"
-    install_root="$HOME/.local/go"
-    curl -fsSL "$url" -o "$tmp/go.tar.gz"
-    tar -C "$tmp" -xzf "$tmp/go.tar.gz"
-    rm -rf "$install_root"
-    mkdir -p "$HOME/.local" "$HOME/.local/bin"
-    mv "$tmp/go" "$install_root"
-    ln -sf "$install_root/bin/go" "$HOME/.local/bin/go"
-    export PATH="$HOME/.local/bin:$install_root/bin:$PATH"
-    rm -rf "$tmp"
-    ok "Go $ver installed"
+
+    warn "Go $GO_MIN+ was not found on this system"
+
+    local os distro pm
+    os="$(detect_os)"
+    distro="$(detect_distro_id)"
+    pm="$(detect_package_manager)"
+
+    if [ "$os" = "android" ]; then
+        info "Detected environment: Android/Termux"
+    elif [ "$os" = "macos" ]; then
+        info "Detected environment: macOS"
+    elif [ -n "$distro" ] && [ "$distro" != "unknown" ]; then
+        info "Detected environment: Linux ($distro)"
+    else
+        info "Detected environment: Linux"
+    fi
+
+    local use_sudo="0"
+    if sudo_available; then
+        use_sudo="1"
+    fi
+
+    local pkg_name install_cmd
+    if [ -n "$pm" ]; then
+        pkg_name="$(package_manager_go_name "$pm")"
+        install_cmd="$(package_manager_install_cmd "$pm" "$pkg_name" "$use_sudo")"
+        info "Found package manager: $pm"
+        if prompt_yes_no "Install Go via '$pm' now? ($install_cmd)"; then
+            step "Installing Go via $pm"
+            if ! eval "$install_cmd"; then
+                fail "Go installation via $pm failed"
+            fi
+            if command -v go >/dev/null 2>&1 && version_gte "$(go version | awk '{print $3}' | sed 's/go//')" "$GO_MIN"; then
+                ok "Go $(go version | awk '{print $3}') installed"
+                return
+            fi
+            warn "Package manager installed a Go version older than $GO_MIN or go is not on PATH"
+        fi
+    fi
+
+    if command -v curl >/dev/null 2>&1; then
+        if prompt_yes_no "Download and install Go $GO_MIN+ directly from go.dev via curl?"; then
+            step "Installing Go via curl"
+            local arch
+            arch=$(detect_arch)
+            local goos
+            goos=$(normalize_host_go_os "$os")
+            local ver="1.25.14"
+            local name="go${ver}.${goos}-${arch}"
+            local url="https://go.dev/dl/${name}.tar.gz"
+            local tmp install_root
+            tmp="$(mktemp -d)"
+            install_root="$HOME/.local/go"
+            curl -fsSL "$url" -o "$tmp/go.tar.gz"
+            tar -C "$tmp" -xzf "$tmp/go.tar.gz"
+            rm -rf "$install_root"
+            mkdir -p "$HOME/.local" "$HOME/.local/bin"
+            mv "$tmp/go" "$install_root"
+            ln -sf "$install_root/bin/go" "$HOME/.local/bin/go"
+            export PATH="$HOME/.local/bin:$install_root/bin:$PATH"
+            rm -rf "$tmp"
+            ok "Go $ver installed"
+            return
+        fi
+    fi
+
+    fail "Go $GO_MIN+ is required to build Lunex. Installation was declined or no installer is available."
 }
 
 build_go_binary() {

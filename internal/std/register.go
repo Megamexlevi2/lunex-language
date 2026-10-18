@@ -24,8 +24,8 @@ func RegisterAll(c *compiler.Compiler) {
 	osMod := OsModule()
 	regexMod := RegexModule()
 	bufferMod := BufferModule()
-	intsMod := IntsModule()
 	imageMod := ImageModule()
+	netMod := NetModule()
 
 	interp.RegisterModule("io", ioMod)
 	interp.RegisterModule("fs", fsMod)
@@ -40,13 +40,17 @@ func RegisterAll(c *compiler.Compiler) {
 	interp.RegisterModule("os", osMod)
 	interp.RegisterModule("regex", regexMod)
 	interp.RegisterModule("buffer", bufferMod)
-	interp.RegisterModule("ints", intsMod)
 	interp.RegisterModule("image", imageMod)
+	interp.RegisterModule("net", netMod)
 
 	envMod := EnvModule(interp)
+	encodingMod := EncodingModule(interp)
 	testingMod := TestingModule(interp)
+	intsMod := IntsModule(interp)
 	interp.RegisterModule("env", envMod)
+	interp.RegisterModule("encoding", encodingMod)
 	interp.RegisterModule("testing", testingMod)
+	interp.RegisterModule("ints", intsMod)
 
 	interp.RegisterModule("http/router", HttpRouterModule(interp))
 	interp.RegisterModule("http/static", HttpStaticModule(interp))
@@ -61,6 +65,7 @@ func RegisterAll(c *compiler.Compiler) {
 	native.ObjVal["crypto"] = cryptoMod
 	native.ObjVal["db"] = dbMod
 	native.ObjVal["env"] = envMod
+	native.ObjVal["encoding"] = encodingMod
 	native.ObjVal["testing"] = testingMod
 	native.ObjVal["ws"] = wsMod
 	native.ObjVal["utils"] = utilsMod
@@ -73,6 +78,7 @@ func RegisterAll(c *compiler.Compiler) {
 	native.ObjVal["buffer"] = bufferMod
 	native.ObjVal["ints"] = intsMod
 	native.ObjVal["image"] = imageMod
+	native.ObjVal["net"] = netMod
 	interp.RegisterModule("internal.native", native)
 	interp.RegisterModule("native", native)
 
@@ -119,11 +125,15 @@ func RegisterLazy(c *compiler.Compiler) {
 		case "buffer":
 			return BufferModule(), true
 		case "ints":
-			return IntsModule(), true
+			return IntsModule(interp), true
 		case "image":
 			return ImageModule(), true
+		case "net":
+			return NetModule(), true
 		case "env":
 			return EnvModule(interp), true
+		case "encoding":
+			return EncodingModule(interp), true
 		case "testing":
 			return TestingModule(interp), true
 		case "ffi":

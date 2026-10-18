@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"fmt"
+	"lunex/internal/ast"
 	"math"
 	"regexp"
 	"sort"
@@ -25,8 +26,8 @@ const (
 	TypeClass
 	TypeInstance
 	TypeRegex
-	TypeChannel
 	TypeError
+	TypeTask
 )
 
 type Value struct {
@@ -40,7 +41,7 @@ type Value struct {
 	ClsVal   *Class
 	InstVal  *Instance
 	RegexVal *regexp.Regexp
-	ChanVal  *Channel
+	TaskVal  *Task
 	ErrVal   error
 }
 
@@ -118,8 +119,8 @@ func FuncVal(f *Function) *Value      { return &Value{Tag: TypeFunction, FnVal: 
 func ClassVal(c *Class) *Value        { return &Value{Tag: TypeClass, ClsVal: c} }
 func InstVal(i *Instance) *Value      { return &Value{Tag: TypeInstance, InstVal: i} }
 func RegexV(re *regexp.Regexp) *Value { return &Value{Tag: TypeRegex, RegexVal: re} }
-func ChanV(ch *Channel) *Value        { return &Value{Tag: TypeChannel, ChanVal: ch} }
 func ErrorVal(err error) *Value       { return &Value{Tag: TypeError, ErrVal: err} }
+func TaskV(task *Task) *Value         { return &Value{Tag: TypeTask, TaskVal: task} }
 
 func (v *Value) IsTruthy() bool {
 	switch v.Tag {
@@ -213,6 +214,8 @@ func (v *Value) toString(seen map[*Value]bool) string {
 			return fmt.Sprintf("[Function: %s]", v.FnVal.Name)
 		}
 		return "[Function]"
+	case TypeTask:
+		return "[task]"
 	case TypeClass:
 		if v.ClsVal != nil {
 			return fmt.Sprintf("[class %s]", v.ClsVal.Name)
@@ -265,10 +268,10 @@ func (v *Value) TypeName() string {
 		return "object"
 	case TypeRegex:
 		return "regexp"
-	case TypeChannel:
-		return "channel"
 	case TypeError:
 		return "error"
+	case TypeTask:
+		return "task"
 	default:
 		return "unknown"
 	}
@@ -276,6 +279,29 @@ func (v *Value) TypeName() string {
 
 func (v *Value) Get(key string) *Value {
 	switch v.Tag {
+	case TypeTask:
+		if v.TaskVal == nil {
+			return Undefined
+		}
+		switch key {
+		case "await":
+			return FuncVal(&Function{Name: "await", Native: func(args []*Value, this *Value) (*Value, error) {
+				return v.TaskVal.Await()
+			}})
+		case "done":
+			return FuncVal(&Function{Name: "done", Native: func(args []*Value, this *Value) (*Value, error) {
+				return BoolVal(v.TaskVal.Done()), nil
+			}})
+		case "state":
+			return FuncVal(&Function{Name: "state", Native: func(args []*Value, this *Value) (*Value, error) {
+				return StringVal(v.TaskVal.State()), nil
+			}})
+		case "cancel":
+			return FuncVal(&Function{Name: "cancel", Native: func(args []*Value, this *Value) (*Value, error) {
+				return BoolVal(v.TaskVal.Cancel()), nil
+			}})
+		}
+		return Undefined
 	case TypeObject:
 		if v.ObjVal != nil {
 			if val, ok := v.ObjVal[key]; ok {
@@ -331,8 +357,11 @@ func (v *Value) Get(key string) *Value {
 		return numberBuiltin(v, key)
 	case TypeClass:
 		if v.ClsVal != nil {
-			if m, ok := v.ClsVal.StaticMethods[key]; ok {
-				return FuncVal(m)
+			if field, ok := v.ClsVal.StaticFields[key]; ok {
+				return field
+			}
+			if method, ok := v.ClsVal.StaticMethods[key]; ok {
+				return FuncVal(method)
 			}
 		}
 		return Undefined
@@ -351,6 +380,13 @@ func (v *Value) Set(key string, val *Value) {
 	case TypeInstance:
 		if v.InstVal != nil {
 			v.InstVal.Set(key, val)
+		}
+	case TypeClass:
+		if v.ClsVal != nil {
+			if v.ClsVal.StaticFields == nil {
+				v.ClsVal.StaticFields = make(map[string]*Value)
+			}
+			v.ClsVal.StaticFields[key] = val
 		}
 	case TypeArray:
 		if key == "length" {
@@ -541,8 +577,16 @@ type Class struct {
 	Super         *Class
 	Methods       map[string]*Function
 	StaticMethods map[string]*Function
+	StaticFields  map[string]*Value
+	Fields        []*ClassField
 	Env           *Environment
 	InitNode      interface{}
+}
+
+type ClassField struct {
+	Name string
+	Init *ast.Node
+	Env  *Environment
 }
 
 type Instance struct {
@@ -576,27 +620,6 @@ func (inst *Instance) Get(key string) *Value {
 
 func (inst *Instance) Set(key string, val *Value) {
 	inst.Fields[key] = val
-}
-
-type Channel struct {
-	queue  chan *Value
-	Closed bool
-}
-
-func NewChannel(bufSize int) *Channel {
-	return &Channel{queue: make(chan *Value, bufSize)}
-}
-
-func (ch *Channel) Send(v *Value) {
-	ch.queue <- v
-}
-
-func (ch *Channel) Receive() *Value {
-	v, ok := <-ch.queue
-	if !ok {
-		return Null
-	}
-	return v
 }
 
 var (

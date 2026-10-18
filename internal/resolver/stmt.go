@@ -147,23 +147,17 @@ func (r *resolver) resolveStmt(node *ast.Node, sc *scope) {
 			if node.CatchParam != "" {
 				catchScope.declare(node.CatchParam)
 			}
-			r.resolveStmt(node.CatchBlock, catchScope)
+			r.resolveStmts(node.CatchBlock.Body_, catchScope)
 			catchScope.finish()
 		}
 		if node.FinallyBlock != nil {
 			r.resolveStmt(node.FinallyBlock, sc)
 		}
 
-	case ast.SpawnStmt:
-
-		if node.Expr != nil {
-			r.resolveExpr(node.Expr, sc)
-		}
-
 	case ast.SelectStmt:
 		for _, sel := range node.SelectCases {
-			if sel.Channel != nil {
-				r.resolveExpr(sel.Channel, sc)
+			if sel.Expr != nil {
+				r.resolveExpr(sel.Expr, sc)
 			}
 			caseScope := newScope(sc, nil)
 			if sel.Binding != "" {

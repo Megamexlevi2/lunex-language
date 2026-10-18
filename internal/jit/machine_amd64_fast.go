@@ -104,6 +104,9 @@ func fastEligible(p *Program, refs int) error {
 		return fmt.Errorf("fast expression stack exceeds %d values", fastMaxStack)
 	}
 	for i, in := range p.Bytecode {
+		if in.Op == OpMath {
+			return fmt.Errorf("native math calls use the general register backend")
+		}
 		if in.Op != OpMod || i == 0 {
 			continue
 		}

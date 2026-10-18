@@ -42,7 +42,7 @@ var builtinKeywords = map[string]bool{
 	"ifhave": true, "ifset": true, "between": true, "matches": true,
 	"startsWith": true, "endsWith": true, "is": true, "not": true,
 	"nax": true, "lunex": true,
-	"spawn": true, "select": true, "channel": true, "component": true,
+	"select": true, "component": true,
 	"macro": true, "immutable": true, "freeze": true,
 	"with": true, "using": true, "assert": true, "delete": true, "watch": true,
 	"use": true, "struct": true,
@@ -152,7 +152,9 @@ func (l *Lexer) skipWhitespace() {
 			l.advance()
 			continue
 		}
-		if ch == '/' && l.peek(1) == '/' {
+		if ch == '/' && l.peek(1) == '!' {
+			l.advance()
+			l.advance()
 			for l.pos < len(l.source) && l.peek(0) != '\n' {
 				l.advance()
 			}
@@ -162,17 +164,11 @@ func (l *Lexer) skipWhitespace() {
 			l.advance()
 			l.advance()
 			for l.pos < len(l.source) {
-				if l.peek(0) == '*' && l.peek(1) == '/' {
+				if l.peek(0) == '/' && l.peek(1) == '*' {
 					l.advance()
 					l.advance()
 					break
 				}
-				l.advance()
-			}
-			continue
-		}
-		if ch == '#' {
-			for l.pos < len(l.source) && l.peek(0) != '\n' {
 				l.advance()
 			}
 			continue
@@ -409,6 +405,9 @@ func (l *Lexer) couldBeRegex() bool {
 		return false
 	}
 	if prev.Type == IDENTIFIER {
+		return false
+	}
+	if prev.Type == OPERATOR && prev.StrVal() == "/" && prev.Line == l.line && prev.Col+1 == l.col {
 		return false
 	}
 	if prev.Type == KEYWORD {

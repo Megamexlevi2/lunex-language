@@ -99,17 +99,100 @@ banner:
 install-go:
 	@if [ -n "$(GOBIN)" ] && [ "$$(printf '%s\n%s\n' "$(GO_MIN)" "$$(go version | awk '{print $$3}' | sed 's/go//')" | sort -V | head -n1)" = "$(GO_MIN)" ]; then \
 		printf '$(GREEN)[ok]$(NC) Go '"$$(go version | awk '{print $$3}')"' is already installed\n'; \
+		exit 0; \
+	fi; \
+	printf '$(YELLOW)[!]$(NC) Go $(GO_MIN)+ was not found on this system\n'; \
+	if [ "$(HOST_OS)" = "android" ]; then \
+		printf '$(CYAN)[info]$(NC) Detected environment: Android/Termux\n'; \
+	elif [ "$(HOST_OS)" = "macos" ]; then \
+		printf '$(CYAN)[info]$(NC) Detected environment: macOS\n'; \
 	else \
-		printf '$(BLUE)==>$(NC) $(BOLD)Installing Go $(GO_MIN)+$(NC)\n'; \
-		tmp=$$(mktemp -d); \
-		root="$(HOME)/.local/go"; \
-		curl -fsSL "https://go.dev/dl/go$(GO_VER).$(TOOLCHAIN_OS)-$(GOARCH).tar.gz" -o "$$tmp/go.tar.gz"; \
-		tar -C "$$tmp" -xzf "$$tmp/go.tar.gz"; \
-		rm -rf "$$root"; mkdir -p "$(HOME)/.local" "$(HOME)/.local/bin"; \
-		mv "$$tmp/go" "$$root"; \
-		ln -sf "$$root/bin/go" "$(HOME)/.local/bin/go"; \
-		rm -rf "$$tmp"; \
-		printf '$(GREEN)[ok]$(NC) Go $(GO_VER) installed\n'; \
+		distro=""; \
+		if [ -f /etc/os-release ]; then distro=$$(awk -F= '/^ID=/{gsub(/"/, "", $$2); print $$2; exit}' /etc/os-release); fi; \
+		if [ -n "$$distro" ]; then \
+			printf '$(CYAN)[info]$(NC) Detected environment: Linux ('"$$distro"')\n'; \
+		else \
+			printf '$(CYAN)[info]$(NC) Detected environment: Linux\n'; \
+		fi; \
+	fi; \
+	pm=""; \
+	if command -v pkg >/dev/null 2>&1 && [ -n "$$PREFIX" ]; then pm="pkg"; \
+	elif command -v apt >/dev/null 2>&1; then pm="apt"; \
+	elif command -v apt-get >/dev/null 2>&1; then pm="apt-get"; \
+	elif command -v dnf >/dev/null 2>&1; then pm="dnf"; \
+	elif command -v yum >/dev/null 2>&1; then pm="yum"; \
+	elif command -v pacman >/dev/null 2>&1; then pm="pacman"; \
+	elif command -v apk >/dev/null 2>&1; then pm="apk"; \
+	elif command -v zypper >/dev/null 2>&1; then pm="zypper"; \
+	elif command -v brew >/dev/null 2>&1; then pm="brew"; \
+	fi; \
+	use_sudo="0"; \
+	if [ "$$(id -u 2>/dev/null || echo 1)" != "0" ] && command -v sudo >/dev/null 2>&1; then \
+		if sudo -n true 2>/dev/null; then use_sudo="1"; \
+		elif [ -t 0 ] && [ -t 1 ]; then use_sudo="1"; \
+		fi; \
+	fi; \
+	installed="0"; \
+	if [ -n "$$pm" ]; then \
+		case "$$pm" in \
+			pkg|apt|apt-get|dnf|yum) pkg_name="golang" ;; \
+			*) pkg_name="go" ;; \
+		esac; \
+		prefix=""; \
+		[ "$$use_sudo" = "1" ] && prefix="sudo "; \
+		case "$$pm" in \
+			pkg)     install_cmd="$${prefix}pkg install -y $$pkg_name" ;; \
+			apt)     install_cmd="$${prefix}apt update && $${prefix}apt install -y $$pkg_name" ;; \
+			apt-get) install_cmd="$${prefix}apt-get update && $${prefix}apt-get install -y $$pkg_name" ;; \
+			dnf)     install_cmd="$${prefix}dnf install -y $$pkg_name" ;; \
+			yum)     install_cmd="$${prefix}yum install -y $$pkg_name" ;; \
+			pacman)  install_cmd="$${prefix}pacman -Sy --noconfirm $$pkg_name" ;; \
+			apk)     install_cmd="$${prefix}apk add $$pkg_name" ;; \
+			zypper)  install_cmd="$${prefix}zypper install -y $$pkg_name" ;; \
+			brew)    install_cmd="brew install $$pkg_name" ;; \
+		esac; \
+		printf '$(CYAN)[info]$(NC) Found package manager: '"$$pm"'\n'; \
+		if [ -t 0 ]; then \
+			read -r -p "Install Go via '$$pm' now? ($$install_cmd) [y/N] " answer; \
+			case "$$answer" in \
+				y|Y|yes|Yes|YES) \
+					printf '$(BLUE)==>$(NC) $(BOLD)Installing Go via '"$$pm"'$(NC)\n'; \
+					if eval "$$install_cmd"; then \
+						if command -v go >/dev/null 2>&1 && [ "$$(printf '%s\n%s\n' "$(GO_MIN)" "$$(go version | awk '{print $$3}' | sed 's/go//')" | sort -V | head -n1)" = "$(GO_MIN)" ]; then \
+							printf '$(GREEN)[ok]$(NC) Go '"$$(go version | awk '{print $$3}')"' installed\n'; \
+							installed="1"; \
+						else \
+							printf '$(YELLOW)[!]$(NC) Package manager installed a Go version older than $(GO_MIN) or go is not on PATH\n'; \
+						fi; \
+					else \
+						printf '$(RED)[error]$(NC) Go installation via '"$$pm"' failed\n' >&2; \
+						exit 1; \
+					fi \
+					;; \
+			esac; \
+		fi; \
+	fi; \
+	if [ "$$installed" != "1" ] && command -v curl >/dev/null 2>&1 && [ -t 0 ]; then \
+		read -r -p "Download and install Go $(GO_MIN)+ directly from go.dev via curl? [y/N] " answer; \
+		case "$$answer" in \
+			y|Y|yes|Yes|YES) \
+				printf '$(BLUE)==>$(NC) $(BOLD)Installing Go via curl$(NC)\n'; \
+				tmp=$$(mktemp -d); \
+				root="$(HOME)/.local/go"; \
+				curl -fsSL "https://go.dev/dl/go$(GO_VER).$(TOOLCHAIN_OS)-$(GOARCH).tar.gz" -o "$$tmp/go.tar.gz"; \
+				tar -C "$$tmp" -xzf "$$tmp/go.tar.gz"; \
+				rm -rf "$$root"; mkdir -p "$(HOME)/.local" "$(HOME)/.local/bin"; \
+				mv "$$tmp/go" "$$root"; \
+				ln -sf "$$root/bin/go" "$(HOME)/.local/bin/go"; \
+				rm -rf "$$tmp"; \
+				printf '$(GREEN)[ok]$(NC) Go $(GO_VER) installed\n'; \
+				installed="1"; \
+				;; \
+		esac; \
+	fi; \
+	if [ "$$installed" != "1" ]; then \
+		printf '$(RED)[error]$(NC) Go $(GO_MIN)+ is required to build Lunex. Installation was declined or no installer is available.\n' >&2; \
+		exit 1; \
 	fi
 
 build: banner install-go

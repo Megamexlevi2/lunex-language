@@ -99,23 +99,6 @@ func (interp *Interpreter) evalCall(node *ast.Node, env *Environment) (*Value, e
 			key, _ := node.Callee.Prop.(string)
 			fnVal = obj.Get(key)
 
-			if (fnVal == nil || fnVal.Tag == TypeUndefined) && obj.Tag == TypeChannel {
-				ch := obj.ChanVal
-				switch key {
-				case "send":
-					fnVal = FuncVal(&Function{Name: "send", Native: func(args []*Value, _ *Value) (*Value, error) {
-						if len(args) > 0 {
-							ch.Send(args[0])
-						}
-						return Undefined, nil
-					}})
-				case "recv":
-					fnVal = FuncVal(&Function{Name: "recv", Native: func(args []*Value, _ *Value) (*Value, error) {
-						return ch.Receive(), nil
-					}})
-				}
-			}
-
 			if fnVal == nil || fnVal.Tag == TypeUndefined {
 				similar := errfmt.FindSimilar(key, objKeys(obj))
 				objName := ""

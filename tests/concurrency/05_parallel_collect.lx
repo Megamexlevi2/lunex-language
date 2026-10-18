@@ -1,0 +1,19 @@
+val io = @import("std.io")
+
+fn collect(item) {
+  struct {
+    name = item
+    label = "item:" + item
+  }
+}
+
+fn main() {
+  val items = ["alpha", "beta", "gamma", "delta", "epsilon"]
+  val results = parallel.map(collect, items)
+  if results.length != items.length { throw "parallel.map returned an incorrect result count" }
+  each index in [0, 1, 2, 3, 4] {
+    if results[index].name != items[index] { throw "parallel.map did not preserve object-result order" }
+    if results[index].label != "item:" + items[index] { throw "parallel.map returned an incorrect object field" }
+  }
+  io.log("PASS parallel_collect")
+}

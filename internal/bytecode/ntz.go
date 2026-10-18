@@ -304,7 +304,7 @@ func (c *ntzC) stmt(n *ast.Node) error {
 
 	case ast.ClassDecl, ast.EnumDecl, ast.NamespaceDecl,
 		ast.ComponentDecl, ast.ImportDecl, ast.ExportDecl, ast.LunexRequire,
-		ast.UseStmt, ast.TryStmt, ast.SpawnStmt, ast.SelectStmt,
+		ast.UseStmt, ast.TryStmt, ast.SelectStmt,
 		ast.WithStmt, ast.HaveStmt, ast.IfHaveStmt, ast.IfSetStmt,
 		ast.MatchStmt, ast.GuardStmt, ast.DeferStmt, ast.DeleteStmt,
 		ast.RepeatStmt, ast.LoopStmt:
@@ -525,7 +525,7 @@ func (c *ntzC) expr(n *ast.Node) error {
 	case ast.NewExpr, ast.TemplateLit,
 		ast.PipelineExpr, ast.SequenceExpr, ast.HaveExpr,
 		ast.TrySafeExpr, ast.RangeExpr, ast.SleepExpr,
-		ast.ChannelExpr, ast.NaxImportExpr, ast.ThisExpr,
+		ast.NaxImportExpr, ast.ThisExpr,
 		ast.SuperExpr, ast.SatisfiesExpr, ast.DecoratedExpr,
 		ast.RegexLit, ast.DeleteExpr:
 		return ErrNTZUnsupported
@@ -1155,8 +1155,6 @@ var stdlibModules = map[string][]struct {
 		{name: "md5", params: []string{"s"}},
 		{name: "sha256", params: []string{"s"}},
 		{name: "sha512", params: []string{"s"}},
-		{name: "base64encode", params: []string{"s"}},
-		{name: "base64decode", params: []string{"s"}},
 		{name: "randomBytes", params: []string{"n"}},
 	},
 	"std.datetime": {
@@ -1168,7 +1166,7 @@ var stdlibModules = map[string][]struct {
 
 func (c *ntzC) compileAtImport(n *ast.Node) error {
 	modPath := n.Source
-	if modPath == "std.ffi" {
+	if modPath == "std.ffi" || modPath == "std.net" {
 		return ErrNTZUnsupported
 	}
 	methods, known := stdlibModules[modPath]

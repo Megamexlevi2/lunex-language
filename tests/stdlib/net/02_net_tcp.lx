@@ -1,0 +1,27 @@
+val io = @import("std.io")
+val net = @import("std.net")
+
+fn main() {
+  val listener = net.listenTCP("127.0.0.1", 0)
+  val address = listener.address()
+  assert address != ""
+  assert !listener.isClosed()
+
+  val client = net.dialTCP(address, { timeoutMs: 2000 })
+  val server = listener.accept()
+  client.setDeadline(2000)
+  server.setDeadline(2000)
+  assert client.write("hello") == 5
+  assert server.readFull(5) == "hello"
+  assert client.remoteAddr() != ""
+  assert server.localAddr() != ""
+
+  server.close()
+  client.close()
+  listener.close()
+  assert server.isClosed()
+  assert client.isClosed()
+  assert listener.isClosed()
+
+  io.log("PASS net_tcp")
+}

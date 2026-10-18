@@ -1,0 +1,32 @@
+val io = @import("std.io")
+val net = @import("std.net")
+
+fn main() {
+  val server = net.listenUDP("127.0.0.1", 0)
+  val address = server.localAddr()
+  val client = net.dialUDP(address, { timeoutMs: 2000 })
+  client.setDeadline(2000)
+  server.setDeadline(2000)
+
+  assert client.write("ping") == 4
+  val packet = server.readFrom()
+  assert packet.data == "ping"
+  assert packet.bytesRead == 4
+  assert packet.port > 0
+  assert server.writeTo("pong", packet.address) == 4
+  assert client.read(4) == "pong"
+
+  assert client.writeBytes([0, 1, 255]) == 3
+  val binary = server.readBytesFrom()
+  assert binary.bytesRead == 3
+  assert binary.data[0] == 0
+  assert binary.data[1] == 1
+  assert binary.data[2] == 255
+
+  client.close()
+  server.close()
+  assert client.isClosed()
+  assert server.isClosed()
+
+  io.log("PASS net_udp")
+}

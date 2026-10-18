@@ -139,6 +139,7 @@ categories=(
   stdlib/ffi
   stdlib/db
   stdlib/http
+  stdlib/net
   stdlib/ints
   stdlib/buffer
   concurrency
@@ -158,6 +159,10 @@ for category in "${categories[@]}"; do
     run_test "$file"
   done < <(find "$dir" -maxdepth 1 -type f -name '*.lx' -print0 | sort -z)
 done
+
+printf '\n%b%s%b\n' "$BOLD" "  task examples" "$RESET"
+run_test "$BASE/../examples/06_tasks.lx"
+run_test "$BASE/../examples/15_tasks.lx"
 
 printf '\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n'
 printf '  passed : %b%d%b / %d\n' "$GREEN" "$PASS" "$RESET" "$TOTAL"

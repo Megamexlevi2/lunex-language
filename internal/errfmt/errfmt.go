@@ -227,7 +227,7 @@ var codeRegistry = map[string]codeDisplay{
 	"E0064":  {"E0064", "permission denied", "insufficient permissions"},
 	"E0065":  {"E0065", "operation timed out", "deadline exceeded"},
 	"E0066":  {"E0066", "network error", "network unreachable or connection refused"},
-	"E0067":  {"E0067", "encoding error", "byte sequence is not valid UTF-8"},
+	"E0067":  {"E0067", "invalid JSON value or string", "JSON input does not match the expected syntax"},
 	"E0068":  {"E0068", "memory allocation failed", "out of memory"},
 	"E0069":  {"E0069", "concurrent write detected", "data race on shared value"},
 	"W0001":  {"W0001", "use of deprecated symbol", "deprecated — will be removed in a future release"},
@@ -261,6 +261,7 @@ var codeRegistry = map[string]codeDisplay{
 	"E0116":  {"E0116", "JSON value nested too deeply", "std.json refused to parse or serialize past the depth limit"},
 	"E0117":  {"E0117", "invalid watch declaration", "watch target must be a variable or member expression followed by a block"},
 	"E0118":  {"E0118", "watch callback failed", "an error occurred while executing a watch callback"},
+	"E0140":  {"E0140", "invalid encoding input", "invalid encoded data or unsupported encoding option"},
 	"E0120":  {"E0120", "native FFI is disabled", "enable FFI with the CLI-only `ffi = on` prefix"},
 	"E0121":  {"E0121", "invalid FFI library path", "provide a non-empty native library path"},
 	"E0122":  {"E0122", "native library load failed", "check the library path, architecture, dependencies, and loader rules"},
@@ -627,6 +628,7 @@ var knownStdlib = map[string]string{
 	"regex":    "std.regex",
 	"re":       "std.regex",
 	"env":      "std.env",
+	"encoding": "std.encoding",
 	"ffi":      "std.ffi",
 	"testing":  "std.testing",
 	"utils":    "std.utils",
@@ -827,7 +829,7 @@ func buildSuggestions(code, name, msg string, similar []string) []string {
 		return out
 
 	case "E0067":
-		add("ensure the byte sequence is valid UTF-8, or use bytes.readRaw() for binary data")
+		add("check the JSON syntax and quote string values with double quotes and valid escapes")
 		return out
 
 	case "E0068":
@@ -835,7 +837,7 @@ func buildSuggestions(code, name, msg string, similar []string) []string {
 		return out
 
 	case "E0069":
-		add("protect shared state with a Mutex or Channel before concurrent access")
+		add("protect shared state with a Mutex or task-safe synchronization before concurrent access")
 		return out
 
 	case "W0001":
@@ -886,7 +888,7 @@ func buildSuggestions(code, name, msg string, similar []string) []string {
 
 	case "E0071":
 		add("move this code inside `fn main() { ... }`")
-		add("top-level scope only allows: `fn`, `val`, `var`, `class`, `@import`, `@fimport`")
+		add("top-level scope only allows: `fn`, `val`, `var`, `@import`, `@fimport`")
 		return out
 
 	case "E0072":
@@ -1017,6 +1019,10 @@ func buildSuggestions(code, name, msg string, similar []string) []string {
 
 	case "E0118":
 		add("fix the error raised by the watch callback before retrying the assignment")
+		return out
+
+	case "E0140":
+		add("check that the input contains valid bytes and that the requested encoding, padding, and endianness are supported")
 		return out
 	}
 
@@ -1284,7 +1290,7 @@ func TopLevelStatementError(kind, file string, line, col int, lines []string) *L
 		Kind:       KindSyntax,
 		Code:       "E0071",
 		Lines:      lines,
-		Notes:      []string{"only declarations (`fn`, `val`, `var`, `class`) and imports are allowed outside `main`"},
+		Notes:      []string{"only declarations (`fn`, `val`, `var`) and imports are allowed outside `main`"},
 		Suggestion: "move this code inside `fn main() { ... }`",
 	}
 }

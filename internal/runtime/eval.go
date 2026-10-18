@@ -20,8 +20,8 @@ func (interp *Interpreter) evalExpr(node *ast.Node, env *Environment) (*Value, e
 	}
 	switch node.Type {
 	case ast.NumberLit:
-		if node.NumCache != nil {
-			return NumberVal(*node.NumCache), nil
+		if cached, ok := interp.numCache.Load(node); ok {
+			return NumberVal(cached.(float64)), nil
 		}
 		return interp.evalNumberCached(node)
 	case ast.StringLit:
@@ -95,8 +95,6 @@ func (interp *Interpreter) evalExpr(node *ast.Node, env *Environment) (*Value, e
 		return interp.evalRange(node, env)
 	case ast.SleepExpr:
 		return interp.evalSleep(node, env)
-	case ast.ChannelExpr:
-		return ChanV(NewChannel(64)), nil
 	case ast.NaxImportExpr:
 		return Null, nil
 	case ast.AtImportExpr:
