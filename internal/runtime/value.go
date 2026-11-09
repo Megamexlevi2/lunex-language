@@ -30,19 +30,31 @@ const (
 	TypeTask
 )
 
-type Value struct {
-	Tag      ValueType
-	BoolVal  bool
-	NumVal   float64
-	StrVal   string
-	ArrVal   []*Value
-	ObjVal   map[string]*Value
+type rareValueFields struct {
 	FnVal    *Function
 	ClsVal   *Class
 	InstVal  *Instance
 	RegexVal *regexp.Regexp
 	TaskVal  *Task
 	ErrVal   error
+}
+
+type ObjectShape struct {
+	Names []string
+	Index map[string]int
+}
+
+type Value struct {
+	Tag         ValueType
+	BoolVal     bool
+	NumVal      float64
+	StrVal      string
+	ArrVal      []*Value
+	ObjVal      map[string]*Value
+	ObjShape    *ObjectShape
+	ObjValues   []*Value
+	ObjAccesses uint8
+	*rareValueFields
 }
 
 var Null = &Value{Tag: TypeNull}
@@ -115,12 +127,28 @@ func ObjectVal(m map[string]*Value) *Value {
 	}
 	return &Value{Tag: TypeObject, ObjVal: m}
 }
-func FuncVal(f *Function) *Value      { return &Value{Tag: TypeFunction, FnVal: f} }
-func ClassVal(c *Class) *Value        { return &Value{Tag: TypeClass, ClsVal: c} }
-func InstVal(i *Instance) *Value      { return &Value{Tag: TypeInstance, InstVal: i} }
-func RegexV(re *regexp.Regexp) *Value { return &Value{Tag: TypeRegex, RegexVal: re} }
-func ErrorVal(err error) *Value       { return &Value{Tag: TypeError, ErrVal: err} }
-func TaskV(task *Task) *Value         { return &Value{Tag: TypeTask, TaskVal: task} }
+
+func ObjectLiteralVal(m map[string]*Value) *Value {
+	return ObjectVal(m)
+}
+func FuncVal(f *Function) *Value {
+	return &Value{Tag: TypeFunction, rareValueFields: &rareValueFields{FnVal: f}}
+}
+func ClassVal(c *Class) *Value {
+	return &Value{Tag: TypeClass, rareValueFields: &rareValueFields{ClsVal: c}}
+}
+func InstVal(i *Instance) *Value {
+	return &Value{Tag: TypeInstance, rareValueFields: &rareValueFields{InstVal: i}}
+}
+func RegexV(re *regexp.Regexp) *Value {
+	return &Value{Tag: TypeRegex, rareValueFields: &rareValueFields{RegexVal: re}}
+}
+func ErrorVal(err error) *Value {
+	return &Value{Tag: TypeError, rareValueFields: &rareValueFields{ErrVal: err}}
+}
+func TaskV(task *Task) *Value {
+	return &Value{Tag: TypeTask, rareValueFields: &rareValueFields{TaskVal: task}}
+}
 
 func (v *Value) IsTruthy() bool {
 	switch v.Tag {
@@ -303,10 +331,8 @@ func (v *Value) Get(key string) *Value {
 		}
 		return Undefined
 	case TypeObject:
-		if v.ObjVal != nil {
-			if val, ok := v.ObjVal[key]; ok {
-				return val
-			}
+		if val, ok := v.getObjectProperty(key); ok {
+			return val
 		}
 		switch key {
 		case "keys":
@@ -373,10 +399,7 @@ func (v *Value) Get(key string) *Value {
 func (v *Value) Set(key string, val *Value) {
 	switch v.Tag {
 	case TypeObject:
-		if v.ObjVal == nil {
-			v.ObjVal = make(map[string]*Value)
-		}
-		v.ObjVal[key] = val
+		v.setObjectProperty(key, val)
 	case TypeInstance:
 		if v.InstVal != nil {
 			v.InstVal.Set(key, val)
@@ -400,6 +423,133 @@ func (v *Value) Set(key string, val *Value) {
 			}
 		}
 	}
+}
+
+const objectShapePromotionThreshold = 8
+const objectShapeCacheLimit = 4096
+
+var objectShapeCache = struct {
+	sync.RWMutex
+	shapes map[string]*ObjectShape
+}{shapes: make(map[string]*ObjectShape)}
+
+func internObjectShape(names []string) *ObjectShape {
+	canonical := append([]string(nil), names...)
+	sort.Strings(canonical)
+	var keyBuilder strings.Builder
+	for _, name := range canonical {
+		keyBuilder.WriteString(strconv.Itoa(len(name)))
+		keyBuilder.WriteByte(':')
+		keyBuilder.WriteString(name)
+		keyBuilder.WriteByte(';')
+	}
+	key := keyBuilder.String()
+	objectShapeCache.RLock()
+	shape := objectShapeCache.shapes[key]
+	objectShapeCache.RUnlock()
+	if shape != nil {
+		return shape
+	}
+	shape = &ObjectShape{Names: canonical, Index: make(map[string]int, len(canonical))}
+	for slot, name := range canonical {
+		shape.Index[name] = slot
+	}
+	objectShapeCache.Lock()
+	if existing := objectShapeCache.shapes[key]; existing != nil {
+		shape = existing
+	} else {
+		if len(objectShapeCache.shapes) >= objectShapeCacheLimit {
+			objectShapeCache.shapes = make(map[string]*ObjectShape)
+		}
+		objectShapeCache.shapes[key] = shape
+	}
+	objectShapeCache.Unlock()
+	return shape
+}
+
+func (v *Value) getObjectProperty(key string) (*Value, bool) {
+	if v.ObjShape != nil {
+		if slot, ok := v.ObjShape.Index[key]; ok && slot >= 0 && slot < len(v.ObjValues) {
+			return v.ObjValues[slot], true
+		}
+		return nil, false
+	}
+	if v.ObjAccesses < objectShapePromotionThreshold {
+		v.ObjAccesses++
+	}
+	if v.ObjAccesses >= objectShapePromotionThreshold && len(v.ObjVal) > 1 {
+		v.promoteObjectShape()
+		if v.ObjShape != nil {
+			if slot, ok := v.ObjShape.Index[key]; ok && slot >= 0 && slot < len(v.ObjValues) {
+				return v.ObjValues[slot], true
+			}
+			return nil, false
+		}
+	}
+	if v.ObjVal != nil {
+		value, ok := v.ObjVal[key]
+		return value, ok
+	}
+	return nil, false
+}
+
+func (v *Value) setObjectProperty(key string, value *Value) {
+	if v.ObjVal == nil {
+		v.ObjVal = make(map[string]*Value)
+	}
+	if v.ObjShape == nil {
+		v.ObjVal[key] = value
+		return
+	}
+	if slot, ok := v.ObjShape.Index[key]; ok && slot >= 0 && slot < len(v.ObjValues) {
+		v.ObjVal[key] = value
+		v.ObjValues[slot] = value
+		return
+	}
+	v.ObjVal[key] = value
+	names := make([]string, len(v.ObjShape.Names), len(v.ObjShape.Names)+1)
+	copy(names, v.ObjShape.Names)
+	names = append(names, key)
+	shape := internObjectShape(names)
+	values := make([]*Value, len(shape.Names))
+	for slot, name := range shape.Names {
+		values[slot] = v.ObjVal[name]
+	}
+	v.ObjShape = shape
+	v.ObjValues = values
+}
+
+func (v *Value) promoteObjectShape() {
+	if v == nil || v.Tag != TypeObject || v.ObjShape != nil || len(v.ObjVal) <= 1 {
+		return
+	}
+	names := make([]string, 0, len(v.ObjVal))
+	for key := range v.ObjVal {
+		names = append(names, key)
+	}
+	shape := internObjectShape(names)
+	values := make([]*Value, len(shape.Names))
+	for slot, key := range shape.Names {
+		values[slot] = v.ObjVal[key]
+	}
+	v.ObjShape = shape
+	v.ObjValues = values
+}
+
+func (v *Value) DeleteObjectProperty(key string) bool {
+	if v == nil || v.Tag != TypeObject {
+		return false
+	}
+	if _, exists := v.ObjVal[key]; !exists {
+		return false
+	}
+	delete(v.ObjVal, key)
+	if v.ObjShape != nil {
+		v.ObjShape = nil
+		v.ObjValues = nil
+		v.ObjAccesses = 0
+	}
+	return true
 }
 
 func (v *Value) GetIndex(idx int) *Value {
@@ -524,7 +674,7 @@ func (v *Value) inspect(seen map[*Value]bool) string {
 			sb.WriteString(v.InstVal.Class.Name)
 			sb.WriteString(" { ")
 			first := true
-			for k, val := range v.InstVal.Fields {
+			for k, val := range v.InstVal.OwnFields() {
 				if !first {
 					sb.WriteString(", ")
 				}
@@ -581,6 +731,14 @@ type Class struct {
 	Fields        []*ClassField
 	Env           *Environment
 	InitNode      interface{}
+	Shape         *InstanceShape
+	shapeMu       sync.Mutex
+}
+
+type InstanceShape struct {
+	Names  []string
+	Index  map[string]int
+	Parent *InstanceShape
 }
 
 type ClassField struct {
@@ -591,35 +749,155 @@ type ClassField struct {
 
 type Instance struct {
 	Class  *Class
+	Shape  *InstanceShape
+	Values []*Value
 	Fields map[string]*Value
 	Proto  *Instance
 }
 
-func NewInstance(cls *Class) *Instance {
-	return &Instance{
-		Class:  cls,
-		Fields: make(map[string]*Value),
+func buildInstanceShape(cls *Class) *InstanceShape {
+	if cls == nil {
+		return &InstanceShape{Index: make(map[string]int)}
 	}
+	var parentShape *InstanceShape
+	if cls.Super != nil {
+		parentShape = ensureInstanceShape(cls.Super)
+	}
+	cls.shapeMu.Lock()
+	defer cls.shapeMu.Unlock()
+	shape := &InstanceShape{Names: make([]string, 0), Index: make(map[string]int), Parent: parentShape}
+	if parentShape != nil {
+		for _, name := range parentShape.Names {
+			shape.Index[name] = len(shape.Names)
+			shape.Names = append(shape.Names, name)
+		}
+	}
+	for _, field := range cls.Fields {
+		if field == nil || field.Name == "" {
+			continue
+		}
+		if _, exists := shape.Index[field.Name]; exists {
+			continue
+		}
+		shape.Index[field.Name] = len(shape.Names)
+		shape.Names = append(shape.Names, field.Name)
+	}
+	cls.Shape = shape
+	return shape
+}
+
+func invalidateInstanceShape(cls *Class) {
+	if cls == nil {
+		return
+	}
+	cls.shapeMu.Lock()
+	cls.Shape = nil
+	cls.shapeMu.Unlock()
+}
+
+func ensureInstanceShape(cls *Class) *InstanceShape {
+	if cls == nil {
+		return &InstanceShape{Index: make(map[string]int)}
+	}
+	var parentShape *InstanceShape
+	if cls.Super != nil {
+		parentShape = ensureInstanceShape(cls.Super)
+	}
+	cls.shapeMu.Lock()
+	shape := cls.Shape
+	if shape != nil && shape.Parent == parentShape {
+		cls.shapeMu.Unlock()
+		return shape
+	}
+	cls.shapeMu.Unlock()
+	return buildInstanceShape(cls)
+}
+
+func NewInstance(cls *Class) *Instance {
+	shape := ensureInstanceShape(cls)
+	values := make([]*Value, len(shape.Names))
+	return &Instance{Class: cls, Shape: shape, Values: values, Fields: make(map[string]*Value)}
 }
 
 func (inst *Instance) Get(key string) *Value {
-	if val, ok := inst.Fields[key]; ok {
-		return val
+	if inst == nil {
+		return Undefined
 	}
-	if inst.Class != nil {
-		if m, ok := inst.Class.Methods[key]; ok {
-			return FuncVal(m)
+	if inst.Shape != nil {
+		if slot, ok := inst.Shape.Index[key]; ok {
+			if slot >= 0 && slot < len(inst.Values) && inst.Values[slot] != nil {
+				return inst.Values[slot]
+			}
+			if value, exists := inst.Fields[key]; exists {
+				if value == nil {
+					return Undefined
+				}
+				return value
+			}
+			return Undefined
 		}
-		if inst.Class.Super != nil {
-			sup := &Instance{Class: inst.Class.Super, Fields: inst.Fields}
-			return sup.Get(key)
+	}
+	if value, ok := inst.Fields[key]; ok {
+		if value == nil {
+			return Undefined
 		}
+		return value
+	}
+	for cls := inst.Class; cls != nil; cls = cls.Super {
+		if method, ok := cls.Methods[key]; ok {
+			return FuncVal(method)
+		}
+	}
+	if inst.Proto != nil {
+		return inst.Proto.Get(key)
 	}
 	return Undefined
 }
 
 func (inst *Instance) Set(key string, val *Value) {
+	if inst == nil {
+		return
+	}
+	if inst.Shape != nil {
+		if slot, ok := inst.Shape.Index[key]; ok && slot >= 0 && slot < len(inst.Values) {
+			inst.Values[slot] = val
+			return
+		}
+	}
+	if inst.Fields == nil {
+		inst.Fields = make(map[string]*Value)
+	}
 	inst.Fields[key] = val
+}
+
+func (inst *Instance) Has(key string) bool {
+	if inst == nil {
+		return false
+	}
+	if inst.Shape != nil {
+		if _, ok := inst.Shape.Index[key]; ok {
+			return true
+		}
+	}
+	_, ok := inst.Fields[key]
+	return ok
+}
+
+func (inst *Instance) OwnFields() map[string]*Value {
+	out := make(map[string]*Value, len(inst.Fields)+len(inst.Values))
+	for key, value := range inst.Fields {
+		out[key] = value
+	}
+	if inst.Shape != nil {
+		for slot, key := range inst.Shape.Names {
+			if slot < len(inst.Values) && inst.Values[slot] != nil {
+				out[key] = inst.Values[slot]
+			} else if _, exists := out[key]; !exists {
+				out[key] = Undefined
+			}
+		}
+	}
+	return out
 }
 
 var (

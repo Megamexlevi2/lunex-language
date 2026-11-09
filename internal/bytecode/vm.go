@@ -21,7 +21,7 @@ func RunObject(data []byte, ntlLoader func(string) (string, bool), pkgLoader fun
 	c := newRuntimeCompiler(ntlLoader, pkgLoader)
 	if chunk.AST != nil {
 		if chunk.Optimized {
-			return c.RunOptimizedAST(chunk.AST, chunk.SourceFile)
+			return c.RunOptimizedASTWithSource(chunk.AST, chunk.SourceFile, chunk.SourceText)
 		}
 		return c.RunAST(chunk.AST, chunk.SourceFile, "")
 	}
@@ -29,6 +29,13 @@ func RunObject(data []byte, ntlLoader func(string) (string, bool), pkgLoader fun
 }
 
 func RunNAX(data []byte, ntlLoader func(string) (string, bool), pkgLoader func(string) (string, bool)) error {
+	return RunNAXWithCompiler(data, newFastRuntimeCompiler(ntlLoader, pkgLoader))
+}
+
+func RunNAXWithCompiler(data []byte, c *compiler.Compiler) error {
+	if c == nil || c.Interpreter() == nil {
+		return fmt.Errorf("cannot run archive without a compiler")
+	}
 	arch, err := decodeNAX(data)
 	if err != nil {
 		return fmt.Errorf("cannot load archive: %w", err)
@@ -37,25 +44,26 @@ func RunNAX(data []byte, ntlLoader func(string) (string, bool), pkgLoader func(s
 		return fmt.Errorf("entry not found in archive: <empty>")
 	}
 
-	if len(arch.Entries) == 1 {
-		c := newFastRuntimeCompiler(ntlLoader, pkgLoader)
-		return RunNAXEntryWithCompiler(arch.Entries[0], c)
-	}
-
 	archiveSources, archiveEntries := prepareArchiveEntries(arch.Entries)
 	archiveASTLoader, archiveSourceLoader := makeArchiveLoaders(archiveSources, archiveEntries)
-
+	interp := c.Interpreter()
+	previousNTLLoader := interp.NTLLoader()
+	previousASTLoader := interp.ASTLoader()
 	combinedLoader := archiveSourceLoader
-	if ntlLoader != nil {
+	if previousNTLLoader != nil {
 		combinedLoader = func(name string) (string, bool) {
 			if src, ok := archiveSourceLoader(name); ok {
 				return src, true
 			}
-			return ntlLoader(name)
+			return previousNTLLoader(name)
 		}
 	}
-	c := newFastRuntimeCompiler(combinedLoader, pkgLoader)
-	c.Interpreter().SetASTLoader(archiveASTLoader)
+	interp.SetNTLLoader(combinedLoader)
+	interp.SetASTLoader(archiveASTLoader)
+	defer func() {
+		interp.SetNTLLoader(previousNTLLoader)
+		interp.SetASTLoader(previousASTLoader)
+	}()
 
 	idx := int(arch.MainIndex)
 	if idx < 0 || idx >= len(arch.Entries) {
@@ -346,14 +354,14 @@ func BuildNCFile(sourcePath string, outputPath string) error {
 
 func RunNAXEntryWithCompiler(entry NAXEntry, c *compiler.Compiler) error {
 	if entry.Kind == NAXEntryArchive {
-		return RunNAX(entry.Data, c.Interpreter().NTLLoader(), c.Interpreter().NTLLoader())
+		return RunNAXWithCompiler(entry.Data, c)
 	}
 	chunk, err := DecodeNAXEntry(entry)
 	if err != nil {
 		return fmt.Errorf("cannot load NAX entry %q: %w", entry.Name, err)
 	}
 	if chunk.AST != nil {
-		return c.RunOptimizedAST(chunk.AST, chunk.SourceFile)
+		return c.RunOptimizedASTWithSource(chunk.AST, chunk.SourceFile, chunk.SourceText)
 	}
 	return c.RunSource(chunk.SourceText, chunk.SourceFile)
 }
@@ -365,7 +373,7 @@ func RunObjectWithCompiler(data []byte, c *compiler.Compiler) error {
 	}
 	if chunk.AST != nil {
 		if chunk.Optimized {
-			return c.RunOptimizedAST(chunk.AST, chunk.SourceFile)
+			return c.RunOptimizedASTWithSource(chunk.AST, chunk.SourceFile, chunk.SourceText)
 		}
 		return c.RunAST(chunk.AST, chunk.SourceFile, "")
 	}

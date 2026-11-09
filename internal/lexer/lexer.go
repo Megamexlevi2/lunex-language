@@ -18,6 +18,7 @@ const (
 	PUNCTUATION TokenType = "PUNCTUATION"
 	REGEX       TokenType = "REGEX"
 	EOF         TokenType = "EOF"
+	COMMENT     TokenType = "COMMENT"
 )
 
 var builtinKeywords = map[string]bool{
@@ -89,12 +90,13 @@ func (t Token) StrVal() string {
 }
 
 type Lexer struct {
-	source   []rune
-	filename string
-	pos      int
-	line     int
-	col      int
-	tokens   []Token
+	source       []rune
+	filename     string
+	pos          int
+	line         int
+	col          int
+	tokens       []Token
+	keepComments bool
 }
 
 func NewLexer(source, filename string) *Lexer {
@@ -152,35 +154,61 @@ func (l *Lexer) skipWhitespace() {
 			l.advance()
 			continue
 		}
-		if ch == '/' && l.peek(1) == '!' {
-			l.advance()
-			l.advance()
-			for l.pos < len(l.source) && l.peek(0) != '\n' {
-				l.advance()
-			}
-			continue
-		}
-		if ch == '/' && l.peek(1) == '*' {
-			l.advance()
-			l.advance()
-			for l.pos < len(l.source) {
-				if l.peek(0) == '/' && l.peek(1) == '*' {
-					l.advance()
-					l.advance()
-					break
-				}
-				l.advance()
-			}
-			continue
-		}
 		break
 	}
 }
 
-func (l *Lexer) readString(quote rune) string {
+func (l *Lexer) scanInterpBody(buf *strings.Builder) {
+	depth := 1
+	var innerQuote rune = 0
+	for l.pos < len(l.source) && depth > 0 {
+		ch := l.peek(0)
+		if innerQuote != 0 {
+			if ch == '\\' {
+				buf.WriteRune(l.advance())
+				if l.pos < len(l.source) {
+					buf.WriteRune(l.advance())
+				}
+				continue
+			}
+			if ch == innerQuote {
+				innerQuote = 0
+			}
+			buf.WriteRune(l.advance())
+			continue
+		}
+		if ch == '"' || ch == '\'' || ch == '`' {
+			innerQuote = ch
+			buf.WriteRune(l.advance())
+			continue
+		}
+		if ch == '{' {
+			depth++
+		} else if ch == '}' {
+			depth--
+		}
+		if depth > 0 {
+			buf.WriteRune(l.advance())
+		} else {
+			l.advance()
+		}
+	}
+}
+
+func (l *Lexer) readString(quote rune) (string, bool) {
 	l.advance()
 	var buf strings.Builder
+	hasInterp := false
 	for l.pos < len(l.source) && l.peek(0) != quote {
+		if l.peek(0) == '!' && l.peek(1) == '{' {
+			hasInterp = true
+			buf.WriteString("!{")
+			l.advance()
+			l.advance()
+			l.scanInterpBody(&buf)
+			buf.WriteRune('}')
+			continue
+		}
 		if l.peek(0) == '\\' {
 			l.advance()
 			esc := l.advance()
@@ -241,31 +269,18 @@ func (l *Lexer) readString(quote rune) string {
 		}
 	}
 	l.advance()
-	return buf.String()
+	return buf.String(), hasInterp
 }
 
 func (l *Lexer) readTemplate() string {
 	l.advance()
 	var buf strings.Builder
 	for l.pos < len(l.source) && l.peek(0) != '`' {
-		if l.peek(0) == '$' && l.peek(1) == '{' {
-			buf.WriteString("${")
+		if l.peek(0) == '!' && l.peek(1) == '{' {
+			buf.WriteString("!{")
 			l.advance()
 			l.advance()
-			depth := 1
-			for l.pos < len(l.source) && depth > 0 {
-				ch := l.peek(0)
-				if ch == '{' {
-					depth++
-				} else if ch == '}' {
-					depth--
-				}
-				if depth > 0 {
-					buf.WriteRune(l.advance())
-				} else {
-					l.advance()
-				}
-			}
+			l.scanInterpBody(&buf)
 			buf.WriteRune('}')
 		} else if l.peek(0) == '\\' {
 			l.advance()
@@ -433,7 +448,44 @@ func (l *Lexer) Tokenize() ([]Token, error) {
 		}
 		line := l.line
 		col := l.col
+		startPos := l.pos
 		ch := l.peek(0)
+
+		if ch == '/' && l.peek(1) == '!' {
+			l.advance()
+			l.advance()
+			for l.pos < len(l.source) && l.peek(0) != '\n' && !(l.peek(0) == '\r' && l.peek(1) == '\n') {
+				l.advance()
+			}
+			raw := string(l.source[startPos:l.pos])
+			if l.keepComments {
+				l.tokens = append(l.tokens, Token{Type: COMMENT, Value: raw, Line: line, Col: col, Raw: raw})
+			}
+			continue
+		}
+
+		if ch == '/' && l.peek(1) == '*' {
+			l.advance()
+			l.advance()
+			closed := false
+			for l.pos < len(l.source) {
+				if l.peek(0) == '*' && l.peek(1) == '/' {
+					l.advance()
+					l.advance()
+					closed = true
+					break
+				}
+				l.advance()
+			}
+			if !closed {
+				return nil, fmt.Errorf("unterminated block comment at %d:%d", line, col)
+			}
+			raw := string(l.source[startPos:l.pos])
+			if l.keepComments {
+				l.tokens = append(l.tokens, Token{Type: COMMENT, Value: raw, Line: line, Col: col, Raw: raw})
+			}
+			continue
+		}
 
 		if isDigit(ch) || (ch == '.' && isDigit(l.peek(1))) {
 			val := l.readNumber()
@@ -442,14 +494,18 @@ func (l *Lexer) Tokenize() ([]Token, error) {
 		}
 
 		if ch == '"' || ch == '\'' {
-			val := l.readString(ch)
-			l.tokens = append(l.tokens, Token{Type: STRING, Value: val, Line: line, Col: col})
+			val, hasInterp := l.readString(ch)
+			tt := STRING
+			if hasInterp {
+				tt = TEMPLATE
+			}
+			l.tokens = append(l.tokens, Token{Type: tt, Value: val, Line: line, Col: col, Raw: string(l.source[startPos:l.pos])})
 			continue
 		}
 
 		if ch == '`' {
 			val := l.readTemplate()
-			l.tokens = append(l.tokens, Token{Type: TEMPLATE, Value: val, Line: line, Col: col})
+			l.tokens = append(l.tokens, Token{Type: TEMPLATE, Value: val, Line: line, Col: col, Raw: string(l.source[startPos:l.pos])})
 			continue
 		}
 
@@ -459,13 +515,13 @@ func (l *Lexer) Tokenize() ([]Token, error) {
 			if builtinKeywords[word] {
 				tt = KEYWORD
 			}
-			l.tokens = append(l.tokens, Token{Type: tt, Value: word, Line: line, Col: col})
+			l.tokens = append(l.tokens, Token{Type: tt, Value: word, Line: line, Col: col, Raw: word})
 			continue
 		}
 
 		if ch == '/' && l.couldBeRegex() && l.peek(1) != '/' && l.peek(1) != '*' {
 			rv := l.readRegex()
-			l.tokens = append(l.tokens, Token{Type: REGEX, Value: rv, Line: line, Col: col})
+			l.tokens = append(l.tokens, Token{Type: REGEX, Value: rv, Line: line, Col: col, Raw: string(l.source[startPos:l.pos])})
 			continue
 		}
 
@@ -485,7 +541,7 @@ func (l *Lexer) Tokenize() ([]Token, error) {
 			if ok {
 				l.pos += len(runes)
 				l.col += len(runes)
-				l.tokens = append(l.tokens, Token{Type: OPERATOR, Value: op, Line: line, Col: col})
+				l.tokens = append(l.tokens, Token{Type: OPERATOR, Value: op, Line: line, Col: col, Raw: op})
 				matched = true
 				break
 			}
@@ -496,13 +552,13 @@ func (l *Lexer) Tokenize() ([]Token, error) {
 
 		if singleOps[ch] {
 			l.advance()
-			l.tokens = append(l.tokens, Token{Type: OPERATOR, Value: string(ch), Line: line, Col: col})
+			l.tokens = append(l.tokens, Token{Type: OPERATOR, Value: string(ch), Line: line, Col: col, Raw: string(ch)})
 			continue
 		}
 
 		if punctuation[ch] {
 			l.advance()
-			l.tokens = append(l.tokens, Token{Type: PUNCTUATION, Value: string(ch), Line: line, Col: col})
+			l.tokens = append(l.tokens, Token{Type: PUNCTUATION, Value: string(ch), Line: line, Col: col, Raw: string(ch)})
 			continue
 		}
 
@@ -511,7 +567,7 @@ func (l *Lexer) Tokenize() ([]Token, error) {
 			continue
 		}
 
-		l.advance()
+		return nil, fmt.Errorf("unexpected character %q at %d:%d", ch, line, col)
 	}
 	l.tokens = append(l.tokens, Token{Type: EOF, Value: "", Line: l.line, Col: l.col})
 	return l.tokens, nil
@@ -535,4 +591,10 @@ func isIdentPart(ch rune) bool {
 
 func Tokenize(source, filename string) ([]Token, error) {
 	return NewLexer(source, filename).Tokenize()
+}
+
+func TokenizeWithComments(source, filename string) ([]Token, error) {
+	l := NewLexer(source, filename)
+	l.keepComments = true
+	return l.Tokenize()
 }

@@ -75,7 +75,7 @@ func jsonStringify(val *Value, indent string, depth int) string {
 	case TypeInstance:
 		obj := ObjectVal(nil)
 		if val.InstVal != nil {
-			obj.ObjVal = val.InstVal.Fields
+			obj.ObjVal = val.InstVal.OwnFields()
 		}
 		return jsonStringify(obj, indent, depth)
 	default:

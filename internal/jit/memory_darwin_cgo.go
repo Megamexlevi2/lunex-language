@@ -20,6 +20,7 @@ import (
 )
 
 func init() {
+	executableMemoryAvailable = true
 	allocateExecutable = darwinAllocate
 	protectExecutable = darwinProtect
 	releaseExecutable = darwinRelease

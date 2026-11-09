@@ -1,18 +1,21 @@
 package jit
 
 import (
+	"errors"
 	"fmt"
 	"lunex/internal/ast"
 	"math"
 	"strconv"
+	"sync"
 	"unsafe"
 )
 
 const (
-	MaxSlots   = 256
-	MaxStack   = 512
-	MaxConsts  = 128
-	MaxCounter = 32
+	MaxSlots               = 256
+	MaxStack               = 512
+	MaxConsts              = 128
+	MaxCounter             = 32
+	HotLoopPollLimit int64 = 2048
 )
 
 const (
@@ -22,6 +25,8 @@ const (
 	StatusDivisionByZero
 	StatusDeopt
 	StatusCallDepth
+	StatusSideExit
+	StatusTierUp
 )
 
 type Context struct {
@@ -37,12 +42,21 @@ type Context struct {
 	Result      float64
 	FrameDepth  int64
 	FrameLimit  int64
+	FrameBase   *Context
+	FrameCount  int64
+	FrameIndex  int64
+	HotCount    int64
+	ResumePC    int64
+	StackDepth  int64
 }
 
 const (
 	ctxResultOff     = int(unsafe.Offsetof(Context{}.Result))
 	ctxFrameDepthOff = int(unsafe.Offsetof(Context{}.FrameDepth))
 	ctxFrameLimitOff = int(unsafe.Offsetof(Context{}.FrameLimit))
+	ctxHotCountOff   = int(unsafe.Offsetof(Context{}.HotCount))
+	ctxResumePCOff   = int(unsafe.Offsetof(Context{}.ResumePC))
+	ctxStackDepthOff = int(unsafe.Offsetof(Context{}.StackDepth))
 	ctxFrameSize     = int(unsafe.Sizeof(Context{}))
 )
 
@@ -54,6 +68,23 @@ type Reference struct {
 type Write struct {
 	Reference
 	Name string
+}
+
+type InlineFunction struct {
+	Name       string
+	Body       *ast.Node
+	ParamSlots []int
+	Identity   any
+}
+
+type InlineGuard struct {
+	Reference
+	Expected any
+}
+
+type SpecializationGuard struct {
+	Reference
+	Value float64
 }
 
 type Instruction struct {
@@ -92,6 +123,7 @@ const (
 	OpCallSelf
 	OpReturnValue
 	OpMath
+	OpHotPoll
 )
 
 type CompareOp uint8
@@ -105,31 +137,38 @@ const (
 	CompareNE
 )
 
+var ErrProgramClosed = errors.New("native program is closed")
+
 type Program struct {
-	Code            []byte
-	FastCode        []byte
-	Refs            []Reference
-	Reads           []bool
-	Writes          []Write
-	Constants       []float64
-	Nodes           []*ast.Node
-	Bytecode        []Instruction
-	Labels          map[int]int
-	Tier            int
-	ExpressionStack int
-	CounterCount    int
-	RootRepeat      bool
-	NestedLoops     bool
-	FastNote        string
-	RangeRoot       bool
-	RangeStart      int
-	RangeStep       int
-	RangeIndex      int
-	FunctionMode    bool
-	FunctionName    string
-	UsesMathObject  bool
-	Recursive       bool
-	ParamSlots      []int
+	runMu                sync.RWMutex
+	closed               bool
+	Code                 []byte
+	FastCode             []byte
+	Refs                 []Reference
+	RefNames             []string
+	Reads                []bool
+	Writes               []Write
+	Constants            []float64
+	Nodes                []*ast.Node
+	Bytecode             []Instruction
+	Labels               map[int]int
+	Tier                 int
+	ExpressionStack      int
+	CounterCount         int
+	RootRepeat           bool
+	NestedLoops          bool
+	FastNote             string
+	RangeRoot            bool
+	RangeStart           int
+	RangeStep            int
+	RangeIndex           int
+	FunctionMode         bool
+	FunctionName         string
+	UsesMathObject       bool
+	Recursive            bool
+	ParamSlots           []int
+	InlineGuards         []InlineGuard
+	SpecializationGuards []SpecializationGuard
 }
 
 func (p *Program) NewContext() *Context {
@@ -140,9 +179,28 @@ func (p *Program) NewContext() *Context {
 	return ctx
 }
 
+func (ctx *Context) frameAt(index int64) *Context {
+	if ctx == nil || ctx.FrameBase == nil || index < 0 || index >= ctx.FrameCount {
+		return nil
+	}
+	return (*Context)(unsafe.Add(unsafe.Pointer(ctx.FrameBase), uintptr(index)*uintptr(ctxFrameSize)))
+}
+
 func (p *Program) Run(ctx *Context) error {
+	if p == nil {
+		return fmt.Errorf("nil native program")
+	}
 	if ctx == nil {
 		return fmt.Errorf("nil native context")
+	}
+	p.runMu.RLock()
+	defer p.runMu.RUnlock()
+	return p.runLocked(ctx)
+}
+
+func (p *Program) runLocked(ctx *Context) error {
+	if p.closed {
+		return ErrProgramClosed
 	}
 	if len(p.Code) == 0 {
 		return fmt.Errorf("native program has no machine code")
@@ -157,7 +215,21 @@ func (p *Program) Run(ctx *Context) error {
 	return runNative(codeAddress(code), uintptrOfContext(ctx))
 }
 
+func (p *Program) HasFastCode() bool {
+	if p == nil {
+		return false
+	}
+	p.runMu.RLock()
+	available := !p.closed && len(p.FastCode) != 0
+	p.runMu.RUnlock()
+	return available
+}
+
 func CompileLoop(node *ast.Node, tier int) (*Program, error) {
+	return CompileLoopSpecialized(node, tier, nil, nil)
+}
+
+func CompileLoopSpecialized(node *ast.Node, tier int, inlineFunctions map[string]InlineFunction, stableValues map[string]float64) (*Program, error) {
 	if tier < 1 || tier > 2 {
 		return nil, fmt.Errorf("unsupported native tier %d", tier)
 	}
@@ -165,14 +237,16 @@ func CompileLoop(node *ast.Node, tier int) (*Program, error) {
 		return nil, fmt.Errorf("nil loop")
 	}
 	c := compiler{
-		program:     &Program{Tier: tier, Labels: make(map[int]int)},
-		tier:        tier,
-		refs:        make(map[Reference]int),
-		consts:      make(map[uint64]int),
-		nodes:       make(map[*ast.Node]int),
-		labels:      make(map[int]int),
-		locals:      make(map[[2]int]int),
-		constLocals: make(map[int]bool),
+		program:             &Program{Tier: tier, Labels: make(map[int]int)},
+		tier:                tier,
+		refs:                make(map[Reference]int),
+		consts:              make(map[uint64]int),
+		nodes:               make(map[*ast.Node]int),
+		labels:              make(map[int]int),
+		locals:              make(map[[2]int]int),
+		constLocals:         make(map[int]bool),
+		inlineFunctions:     inlineFunctions,
+		localConstantValues: make(map[int]float64),
 	}
 	limits := []float64{0, math.Ldexp(1, 63), -math.Ldexp(1, 63), 1}
 	for _, v := range limits {
@@ -206,6 +280,7 @@ func CompileLoop(node *ast.Node, tier int) (*Program, error) {
 	c.program.Labels = c.labels
 	c.program.Nodes = c.nodeList
 	if tier >= 2 {
+		specializeStableSlots(c.program, stableValues)
 		coalesceTicks(c.program)
 		optimizeBytecode(c.program)
 	}
@@ -238,14 +313,15 @@ func CompileFunction(body *ast.Node, name string, paramSlots []int, tier int) (*
 		return nil, fmt.Errorf("function may fall through without returning a value")
 	}
 	c := compiler{
-		program:     &Program{Tier: tier, Labels: make(map[int]int), FunctionMode: true, FunctionName: name},
-		tier:        tier,
-		refs:        make(map[Reference]int),
-		consts:      make(map[uint64]int),
-		nodes:       make(map[*ast.Node]int),
-		labels:      make(map[int]int),
-		locals:      make(map[[2]int]int),
-		constLocals: make(map[int]bool),
+		program:             &Program{Tier: tier, Labels: make(map[int]int), FunctionMode: true, FunctionName: name},
+		tier:                tier,
+		refs:                make(map[Reference]int),
+		consts:              make(map[uint64]int),
+		nodes:               make(map[*ast.Node]int),
+		labels:              make(map[int]int),
+		locals:              make(map[[2]int]int),
+		constLocals:         make(map[int]bool),
+		localConstantValues: make(map[int]float64),
 	}
 	limits := []float64{0, math.Ldexp(1, 63), -math.Ldexp(1, 63), 1}
 	for _, v := range limits {
@@ -421,23 +497,25 @@ func functionReturnsValue(body *ast.Node) bool {
 }
 
 type compiler struct {
-	program     *Program
-	tier        int
-	refs        map[Reference]int
-	consts      map[uint64]int
-	nodes       map[*ast.Node]int
-	nodeList    []*ast.Node
-	code        []Instruction
-	labels      map[int]int
-	loops       []loopTarget
-	nextLabel   int
-	stack       int
-	maxStack    int
-	layers      []int
-	nextLayer   int
-	scratch     int
-	locals      map[[2]int]int
-	constLocals map[int]bool
+	program             *Program
+	tier                int
+	refs                map[Reference]int
+	consts              map[uint64]int
+	nodes               map[*ast.Node]int
+	nodeList            []*ast.Node
+	code                []Instruction
+	labels              map[int]int
+	loops               []loopTarget
+	nextLabel           int
+	stack               int
+	maxStack            int
+	layers              []int
+	nextLayer           int
+	scratch             int
+	locals              map[[2]int]int
+	constLocals         map[int]bool
+	inlineFunctions     map[string]InlineFunction
+	localConstantValues map[int]float64
 }
 
 type loopTarget struct {
@@ -503,6 +581,7 @@ func (c *compiler) addRef(node *ast.Node) (int, error) {
 	idx := len(c.program.Refs)
 	c.refs[r] = idx
 	c.program.Refs = append(c.program.Refs, r)
+	c.program.RefNames = append(c.program.RefNames, node.Name)
 	c.program.Reads = append(c.program.Reads, false)
 	return idx, nil
 }
@@ -510,6 +589,7 @@ func (c *compiler) addRef(node *ast.Node) (int, error) {
 func (c *compiler) newScratch() int {
 	idx := len(c.program.Refs)
 	c.program.Refs = append(c.program.Refs, Reference{Hops: -1, Slot: c.scratch})
+	c.program.RefNames = append(c.program.RefNames, "")
 	c.program.Reads = append(c.program.Reads, false)
 	c.scratch++
 	return idx
@@ -624,6 +704,9 @@ func (c *compiler) compileWhile(node *ast.Node, root bool) error {
 		c.emitTick(node)
 	}
 	header := c.label()
+	if root && c.tier == 1 {
+		c.emit(Instruction{Op: OpHotPoll, ErrorNode: c.nodeID(node)})
+	}
 	exit := c.newLabel()
 	if err := c.compileExpr(node.Test); err != nil {
 		return err
@@ -651,6 +734,9 @@ func (c *compiler) compileFor(node *ast.Node, root bool) error {
 		c.emitTick(node)
 	}
 	header := c.label()
+	if root && c.tier == 1 {
+		c.emit(Instruction{Op: OpHotPoll, ErrorNode: c.nodeID(node)})
+	}
 	exit := c.newLabel()
 	continueLabel := c.newLabel()
 	if node.Test != nil {
@@ -685,6 +771,14 @@ func (c *compiler) compileRepeat(node *ast.Node, root bool) error {
 	if !root {
 		c.emitTick(node)
 	}
+	if !root && c.tier >= 2 {
+		if count, ok := constantUnrollCount(node.Count); ok && count <= 16 {
+			if node.Count != nil {
+				c.emitFoldedTicks(node.Count)
+			}
+			return c.compileUnrolledRepeat(node, count)
+		}
+	}
 	counter := c.program.CounterCount
 	c.program.CounterCount++
 	if root {
@@ -702,16 +796,29 @@ func (c *compiler) compileRepeat(node *ast.Node, root bool) error {
 		c.push(-1)
 	}
 	header := c.label()
-	exit := c.newLabel()
-	continueLabel := c.newLabel()
-	c.emit(Instruction{Op: OpRepeatCheck, A: counter, Target: exit})
-	c.loops = append(c.loops, loopTarget{breakLabel: exit, continueLabel: continueLabel, root: root})
-	if err := c.compileStmt(node.Body); err != nil {
-		return err
+	if root && c.tier == 1 {
+		c.emit(Instruction{Op: OpHotPoll, ErrorNode: c.nodeID(node)})
 	}
-	c.loops = c.loops[:len(c.loops)-1]
-	c.labels[continueLabel] = len(c.code)
-	c.emit(Instruction{Op: OpRepeatDecrement, A: counter})
+	exit := c.newLabel()
+	c.emit(Instruction{Op: OpRepeatCheck, A: counter, Target: exit})
+	unroll := 1
+	if c.tier >= 2 {
+		unroll = 4
+	}
+	for lane := 0; lane < unroll; lane++ {
+		continueLabel := c.newLabel()
+		c.loops = append(c.loops, loopTarget{breakLabel: exit, continueLabel: continueLabel, root: root})
+		if err := c.compileStmt(node.Body); err != nil {
+			c.loops = c.loops[:len(c.loops)-1]
+			return err
+		}
+		c.loops = c.loops[:len(c.loops)-1]
+		c.labels[continueLabel] = len(c.code)
+		c.emit(Instruction{Op: OpRepeatDecrement, A: counter})
+		if lane+1 < unroll {
+			c.emit(Instruction{Op: OpRepeatCheck, A: counter, Target: exit})
+		}
+	}
 	c.branch(OpJump, header)
 	c.labels[exit] = len(c.code)
 	return nil
@@ -725,6 +832,9 @@ func (c *compiler) compileInfinite(node *ast.Node, root bool) error {
 		c.emitTick(node)
 	}
 	header := c.label()
+	if root && c.tier == 1 {
+		c.emit(Instruction{Op: OpHotPoll, ErrorNode: c.nodeID(node)})
+	}
 	exit := c.newLabel()
 	c.loops = append(c.loops, loopTarget{breakLabel: exit, continueLabel: header, root: root})
 	if err := c.compileStmt(node.Body); err != nil {
@@ -878,10 +988,28 @@ func (c *compiler) compileExpr(node *ast.Node) error {
 		if err != nil {
 			return err
 		}
+		if c.isScratch(idx) {
+			if value, ok := c.constLocals[idx]; ok && value {
+				if constant, exists := c.localConstantValues[idx]; exists {
+					c.emit(Instruction{Op: OpPushConst, A: c.constant(constant)})
+					c.push(1)
+					break
+				}
+			}
+		}
 		c.markRead(idx)
 		c.emit(Instruction{Op: OpLoadSlot, A: idx})
 		c.push(1)
 	case ast.CallExpr:
+		if !c.program.FunctionMode {
+			inlined, err := c.compileInlineCall(node)
+			if err != nil {
+				return err
+			}
+			if inlined {
+				break
+			}
+		}
 		if !node.Optional {
 			if id, ok := nativeMathCall(node); ok {
 				c.program.UsesMathObject = true
@@ -937,6 +1065,7 @@ func (c *compiler) compileExpr(node *ast.Node) error {
 		c.program.Recursive = true
 		c.push(1 - len(node.Args))
 	case ast.BinaryExpr:
+		nodeIndex := c.nodeID(node)
 		if err := c.compileExpr(node.Left); err != nil {
 			return err
 		}
@@ -945,21 +1074,21 @@ func (c *compiler) compileExpr(node *ast.Node) error {
 		}
 		op, ok := compareOp(node.Op)
 		if ok {
-			c.emit(Instruction{Op: OpCompare, A: int(op), ErrorNode: c.nodeID(node)})
+			c.emit(Instruction{Op: OpCompare, A: int(op), ErrorNode: nodeIndex})
 		} else {
 			switch node.Op {
 			case "+":
-				c.emit(Instruction{Op: OpAdd})
+				c.emit(Instruction{Op: OpAdd, ErrorNode: nodeIndex})
 			case "-":
-				c.emit(Instruction{Op: OpSub})
+				c.emit(Instruction{Op: OpSub, ErrorNode: nodeIndex})
 			case "*":
-				c.emit(Instruction{Op: OpMul})
+				c.emit(Instruction{Op: OpMul, ErrorNode: nodeIndex})
 			case "/":
-				c.emit(Instruction{Op: OpDiv, ErrorNode: c.nodeID(node)})
+				c.emit(Instruction{Op: OpDiv, ErrorNode: nodeIndex})
 			case "%":
-				c.emit(Instruction{Op: OpMod, ErrorNode: c.nodeID(node)})
+				c.emit(Instruction{Op: OpMod, ErrorNode: nodeIndex})
 			case "**":
-				c.emit(Instruction{Op: OpMath, A: MathPow, ErrorNode: c.nodeID(node)})
+				c.emit(Instruction{Op: OpMath, A: MathPow, ErrorNode: nodeIndex})
 			default:
 				return fmt.Errorf("operator %q is outside native subset", node.Op)
 			}
@@ -1038,19 +1167,20 @@ func (c *compiler) compileExpr(node *ast.Node) error {
 			return err
 		}
 		if node.Op != "=" {
+			nodeIndex := c.nodeID(node)
 			if err := c.compileExpr(node.Left); err != nil {
 				return err
 			}
 			c.emit(Instruction{Op: OpSwap})
 			switch node.Op {
 			case "+=":
-				c.emit(Instruction{Op: OpAdd})
+				c.emit(Instruction{Op: OpAdd, ErrorNode: nodeIndex})
 			case "-=":
-				c.emit(Instruction{Op: OpSub})
+				c.emit(Instruction{Op: OpSub, ErrorNode: nodeIndex})
 			case "*=":
-				c.emit(Instruction{Op: OpMul})
+				c.emit(Instruction{Op: OpMul, ErrorNode: nodeIndex})
 			case "/=":
-				c.emit(Instruction{Op: OpDiv, ErrorNode: c.nodeID(node)})
+				c.emit(Instruction{Op: OpDiv, ErrorNode: nodeIndex})
 			default:
 				return fmt.Errorf("assignment operator %q is outside native subset", node.Op)
 			}
@@ -1215,6 +1345,11 @@ func (p *Program) Close() error {
 	if p == nil {
 		return nil
 	}
+	p.runMu.Lock()
+	defer p.runMu.Unlock()
+	if p.closed {
+		return nil
+	}
 	var first error
 	if len(p.Code) != 0 {
 		if err := releaseExecutable(p.Code); err != nil {
@@ -1228,6 +1363,7 @@ func (p *Program) Close() error {
 		}
 		p.FastCode = nil
 	}
+	p.closed = true
 	return first
 }
 
@@ -1312,8 +1448,14 @@ func (c *compiler) compileVarDecl(node *ast.Node) error {
 	c.storeSlot(idx)
 	if node.IsConst {
 		c.constLocals[idx] = true
+		if value, ok := foldConstant(node.Init); ok {
+			c.localConstantValues[idx] = value
+		} else {
+			delete(c.localConstantValues, idx)
+		}
 	} else {
 		delete(c.constLocals, idx)
+		delete(c.localConstantValues, idx)
 	}
 	return nil
 }
@@ -1328,6 +1470,15 @@ func (c *compiler) compileForRange(node *ast.Node, root bool) error {
 	args := node.Right.Args
 	if len(args) < 1 || len(args) > 3 {
 		return fmt.Errorf("range() with %d arguments is outside native subset", len(args))
+	}
+	if !root && c.tier >= 2 {
+		if start, step, count, ok := constantRange(node.Right); ok && count <= 16 {
+			c.emitTick(node)
+			for _, arg := range args {
+				c.emitFoldedTicks(arg)
+			}
+			return c.compileUnrolledRange(node, start, step, count)
+		}
 	}
 	valueSlot := scopeSlot(node.ScopeInfo, node.Name)
 	if valueSlot < 0 {
@@ -1374,31 +1525,45 @@ func (c *compiler) compileForRange(node *ast.Node, root bool) error {
 		}
 	}
 	header := c.label()
+	if root && c.tier == 1 {
+		c.emit(Instruction{Op: OpHotPoll, ErrorNode: c.nodeID(node)})
+	}
 	exit := c.newLabel()
-	continueLabel := c.newLabel()
 	c.emit(Instruction{Op: OpRepeatCheck, A: counter, Target: exit})
-	c.emitTick(node)
-	c.loadSlot(indexRef)
-	c.loadSlot(stepRef)
-	c.arith(OpMul, node)
-	c.loadSlot(startRef)
-	c.arith(OpAdd, node)
-	c.storeSlot(valueRef)
-	if aliasRef >= 0 {
+	unroll := 1
+	if c.tier >= 2 {
+		unroll = 4
+	}
+	for lane := 0; lane < unroll; lane++ {
+		c.emitTick(node)
 		c.loadSlot(indexRef)
-		c.storeSlot(aliasRef)
+		c.loadSlot(stepRef)
+		c.arith(OpMul, node)
+		c.loadSlot(startRef)
+		c.arith(OpAdd, node)
+		c.storeSlot(valueRef)
+		if aliasRef >= 0 {
+			c.loadSlot(indexRef)
+			c.storeSlot(aliasRef)
+		}
+		continueLabel := c.newLabel()
+		c.loops = append(c.loops, loopTarget{breakLabel: exit, continueLabel: continueLabel, root: root})
+		if err := c.compileStmt(node.Body); err != nil {
+			c.loops = c.loops[:len(c.loops)-1]
+			c.leaveLayer()
+			return err
+		}
+		c.loops = c.loops[:len(c.loops)-1]
+		c.labels[continueLabel] = len(c.code)
+		c.loadSlot(indexRef)
+		c.pushConst(1)
+		c.arith(OpAdd, node)
+		c.storeSlot(indexRef)
+		c.emit(Instruction{Op: OpRepeatDecrement, A: counter})
+		if lane+1 < unroll {
+			c.emit(Instruction{Op: OpRepeatCheck, A: counter, Target: exit})
+		}
 	}
-	c.loops = append(c.loops, loopTarget{breakLabel: exit, continueLabel: continueLabel, root: root})
-	if err := c.compileStmt(node.Body); err != nil {
-		return err
-	}
-	c.loops = c.loops[:len(c.loops)-1]
-	c.labels[continueLabel] = len(c.code)
-	c.loadSlot(indexRef)
-	c.pushConst(1)
-	c.arith(OpAdd, node)
-	c.storeSlot(indexRef)
-	c.emit(Instruction{Op: OpRepeatDecrement, A: counter})
 	c.branch(OpJump, header)
 	c.labels[exit] = len(c.code)
 	c.leaveLayer()

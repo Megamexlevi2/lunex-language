@@ -213,12 +213,18 @@ func (interp *Interpreter) execRepeat(node *ast.Node, env *Environment) (*Value,
 			if count >= 0 {
 				remaining = int64(count - i)
 			}
-			if handled, deopt, err := interp.runJIT(node, env, remaining); err != nil {
+			handled, deopt, processed, err := interp.runJITWithProgress(node, env, remaining)
+			if err != nil {
 				return nil, err
-			} else if handled {
+			}
+			if handled {
 				return Undefined, nil
-			} else if deopt {
+			}
+			if deopt {
 				jitDisabled = true
+			} else if processed > 0 {
+				i += processed - 1
+				continue
 			}
 		}
 		_, err := interp.execNode(node.Body, env)
@@ -306,10 +312,10 @@ func (interp *Interpreter) execTry(node *ast.Node, env *Environment) (*Value, er
 						"stack":   StringVal("Error: " + errMsg),
 					})
 					if le, ok := err.(*errfmt.LunexError); ok {
-						errObj.ObjVal["code"] = StringVal(le.Code)
-						errObj.ObjVal["kind"] = StringVal(string(le.Kind))
+						errObj.Set("code", StringVal(le.Code))
+						errObj.Set("kind", StringVal(string(le.Kind)))
 						if le.Phase != "" {
-							errObj.ObjVal["phase"] = StringVal(le.Phase)
+							errObj.Set("phase", StringVal(le.Phase))
 						}
 					}
 					catchEnv.DefineSlot(0, resolver.SlotIndex(node.CatchBlock.ScopeInfo, node.CatchParam), node.CatchParam, errObj, false)
@@ -445,7 +451,7 @@ func (interp *Interpreter) execDelete(node *ast.Node, env *Environment) (*Value,
 			key, _ = node.Expr.Prop.(string)
 		}
 		if obj.Tag == TypeObject {
-			delete(obj.ObjVal, key)
+			obj.DeleteObjectProperty(key)
 		}
 	}
 	return True, nil

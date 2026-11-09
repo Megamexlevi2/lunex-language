@@ -1,4 +1,4 @@
-//go:build linux || android || darwin
+//go:build linux || android || darwin || freebsd
 
 package jit
 
@@ -28,6 +28,8 @@ func loadNativeMathSymbols() {
 		candidates = []string{"/usr/lib/libSystem.B.dylib"}
 	case "android":
 		candidates = []string{"libm.so", "libc.so"}
+	case "freebsd":
+		candidates = []string{"libm.so.5", "libm.so", "libc.so.7"}
 	default:
 		candidates = []string{"libm.so.6", "libm.so", "libc.so.6"}
 	}
@@ -57,6 +59,7 @@ func loadNativeMathSymbols() {
 		MathTrunc: "trunc",
 		MathPow:   "pow",
 		MathAtan2: "atan2",
+		MathHypot: "hypot",
 	} {
 		for _, handle := range mathSymbolLibs {
 			address, err := purego.Dlsym(handle, symbol)

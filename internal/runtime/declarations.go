@@ -60,6 +60,7 @@ func (interp *Interpreter) execClassDecl(node *ast.Node, env *Environment) (*Val
 	cls.StaticMethods = make(map[string]*Function)
 	cls.StaticFields = make(map[string]*Value)
 	cls.Fields = nil
+	invalidateInstanceShape(cls)
 	cls.Env = env
 	if node.SuperClass != nil {
 		superVal, err := interp.evalExpr(node.SuperClass, env)
@@ -114,6 +115,7 @@ func (interp *Interpreter) execClassDecl(node *ast.Node, env *Environment) (*Val
 			cls.Methods[member.Name] = fn
 		}
 	}
+	ensureInstanceShape(cls)
 	clsVal := ClassVal(cls)
 	if node.Name != "" {
 		env.Define(node.Name, clsVal, false)

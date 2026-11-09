@@ -11,6 +11,7 @@ import (
 	"lunex/internal/runtime"
 	shared "lunex/internal/std/shared"
 	"math"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -25,36 +26,51 @@ type dbEngine struct {
 	mu        sync.Mutex
 }
 
-func (e *dbEngine) open(name string) (*lunexDB, error) {
+func (e *dbEngine) open(name string, databaseName ...string) (*lunexDB, error) {
 	if name == "" {
 		name = "default"
 	}
+	path, err := resolveDBPath(name, databaseName...)
+	if err != nil {
+		return nil, err
+	}
+	displayName := name
+	if len(databaseName) > 0 {
+		displayName = databaseName[0]
+	} else if filepath.IsAbs(name) || strings.ContainsAny(name, `/\`) || strings.HasPrefix(name, ".") {
+		displayName = strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if db, ok := e.databases[name]; ok {
+	if db, ok := e.databases[path]; ok {
 		return db, nil
 	}
-	store, err := openStore(name)
+	store, err := openStore(path)
 	if err != nil {
 		return nil, err
 	}
 	db := &lunexDB{
-		name:   name,
+		name:   displayName,
+		key:    path,
 		store:  store,
 		tables: make(map[string]*lunexTable),
 	}
-	e.databases[name] = db
+	e.databases[path] = db
 	return db, nil
 }
 
-func (e *dbEngine) drop(name string) error {
+func (e *dbEngine) drop(name string, databaseName ...string) error {
 	if name == "" {
 		name = "default"
 	}
+	path, err := resolveDBPath(name, databaseName...)
+	if err != nil {
+		return err
+	}
 	e.mu.Lock()
-	delete(e.databases, name)
+	delete(e.databases, path)
 	e.mu.Unlock()
-	return dropStoreFile(name)
+	return dropStoreFile(path)
 }
 
 func (e *dbEngine) close(db *lunexDB) error {
@@ -62,8 +78,8 @@ func (e *dbEngine) close(db *lunexDB) error {
 		return nil
 	}
 	e.mu.Lock()
-	if current, ok := e.databases[db.name]; ok && current == db {
-		delete(e.databases, db.name)
+	if current, ok := e.databases[db.key]; ok && current == db {
+		delete(e.databases, db.key)
 	}
 	e.mu.Unlock()
 	return db.store.close()
@@ -80,6 +96,7 @@ func (e *dbEngine) list() []string {
 
 type lunexDB struct {
 	name   string
+	key    string
 	store  *sqliteStore
 	tables map[string]*lunexTable
 	mu     sync.Mutex
@@ -2881,36 +2898,38 @@ func dbObjectWithTx(db *lunexDB, tx *sql.Tx) *runtime.Value {
 
 func dbObject(db *lunexDB) *runtime.Value { return dbObjectWithTx(db, nil) }
 
+func dbOpenArguments(args []*runtime.Value) (string, []string) {
+	name := "default"
+	if len(args) > 0 && args[0] != nil && !args[0].IsNullish() {
+		name = args[0].ToString()
+	}
+	if len(args) > 1 && args[1] != nil && !args[1].IsNullish() {
+		return name, []string{args[1].ToString()}
+	}
+	return name, nil
+}
+
 func DbModule() *runtime.Value {
 	return runtime.ObjectVal(map[string]*runtime.Value{
 		"create": runtime.FuncVal(&runtime.Function{Name: "create", Native: func(args []*runtime.Value, _ *runtime.Value) (*runtime.Value, error) {
-			name := "default"
-			if len(args) > 0 && args[0] != nil && !args[0].IsNullish() {
-				name = args[0].ToString()
-			}
-			db, err := globalDBEngine.open(name)
+			name, databaseName := dbOpenArguments(args)
+			db, err := globalDBEngine.open(name, databaseName...)
 			if err != nil {
 				return runtime.Null, fmt.Errorf("db.create: %w", err)
 			}
 			return dbObject(db), nil
 		}}),
 		"open": runtime.FuncVal(&runtime.Function{Name: "open", Native: func(args []*runtime.Value, _ *runtime.Value) (*runtime.Value, error) {
-			name := "default"
-			if len(args) > 0 && !args[0].IsNullish() {
-				name = args[0].ToString()
-			}
-			db, err := globalDBEngine.open(name)
+			name, databaseName := dbOpenArguments(args)
+			db, err := globalDBEngine.open(name, databaseName...)
 			if err != nil {
 				return runtime.Null, fmt.Errorf("db.open: %w", err)
 			}
 			return dbObject(db), nil
 		}}),
 		"connect": runtime.FuncVal(&runtime.Function{Name: "connect", Native: func(args []*runtime.Value, _ *runtime.Value) (*runtime.Value, error) {
-			name := "default"
-			if len(args) > 0 && !args[0].IsNullish() {
-				name = args[0].ToString()
-			}
-			db, err := globalDBEngine.open(name)
+			name, databaseName := dbOpenArguments(args)
+			db, err := globalDBEngine.open(name, databaseName...)
 			if err != nil {
 				return runtime.Null, fmt.Errorf("db.connect: %w", err)
 			}
@@ -2918,7 +2937,12 @@ func DbModule() *runtime.Value {
 		}}),
 		"drop": runtime.FuncVal(&runtime.Function{Name: "drop", Native: func(args []*runtime.Value, _ *runtime.Value) (*runtime.Value, error) {
 			if len(args) > 0 {
-				if err := globalDBEngine.drop(args[0].ToString()); err != nil {
+				name := args[0].ToString()
+				var databaseName []string
+				if len(args) > 1 && args[1] != nil && !args[1].IsNullish() {
+					databaseName = []string{args[1].ToString()}
+				}
+				if err := globalDBEngine.drop(name, databaseName...); err != nil {
 					return runtime.Undefined, fmt.Errorf("db.drop: %w", err)
 				}
 			}

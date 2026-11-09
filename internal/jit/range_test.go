@@ -62,9 +62,9 @@ func TestRootRangeLoop(t *testing.T) {
 		t.Skip("native execution unavailable")
 	}
 	cases := []struct {
-		name               string
-		start, end, step   float64
-		single             bool
+		name             string
+		start, end, step float64
+		single           bool
 	}{
 		{"single", 0, 10, 1, true},
 		{"single_zero", 0, 0, 1, true},
@@ -230,8 +230,12 @@ func TestNestedRangeLoops(t *testing.T) {
 			if ctx.Status != StatusOK {
 				t.Fatalf("%s tier=%d: status %d", tc.name, tier, ctx.Status)
 			}
-			if math.Abs(ctx.Slots[total]-want) > 1e-9 {
-				t.Fatalf("%s tier=%d: got %v want %v", tc.name, tier, ctx.Slots[total], want)
+			got := 0.0
+			if total >= 0 {
+				got = ctx.Slots[total]
+			}
+			if math.Abs(got-want) > 1e-9 {
+				t.Fatalf("%s tier=%d: got %v want %v", tc.name, tier, got, want)
 			}
 			_ = p.Close()
 		}

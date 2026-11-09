@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 type continueSignal struct{}
@@ -45,12 +46,20 @@ type Interpreter struct {
 	moduleLoader      func(string) (*Value, bool)
 	libLoadDepth      int32
 	callDepth         int
+	diagnosticTracing bool
+	diagnosticJIT     bool
+	callStack         []errfmt.StackFrame
+	lastPanicStack    []errfmt.StackFrame
 	templateCache     sync.Map
 	numCache          sync.Map
 	scopeCache        sync.Map
+	memberCache       sync.Map
 	execSteps         int64
 	maxExecSteps      int64
 	jitMu             sync.Mutex
+	feedbackMu        sync.RWMutex
+	typeFeedback      map[*ast.Node]*NodeTypeFeedback
+	feedbackTicker    atomic.Uint64
 	jitLoops          map[*ast.Node]*jitLoopState
 	jitFunctions      map[*Function]*jitFunctionState
 	jitFunctionFrames sync.Pool
@@ -109,6 +118,7 @@ func NewInterpreter() *Interpreter {
 		profiler:     NewProfiler(),
 		modules:      make(map[string]*Value),
 		maxExecSteps: resolveMaxExecSteps(),
+		typeFeedback: make(map[*ast.Node]*NodeTypeFeedback),
 		jitLoops:     make(map[*ast.Node]*jitLoopState),
 		jitFunctions: make(map[*Function]*jitFunctionState),
 		watchers:     make([]*watcher, 0),
@@ -127,7 +137,79 @@ func NewInterpreter() *Interpreter {
 
 func (interp *Interpreter) SetFilename(f string)          { interp.filename = f }
 func (interp *Interpreter) SetSourceLines(lines []string) { interp.sourceLines = lines }
-func (interp *Interpreter) getSourceLines() []string      { return interp.sourceLines }
+func (interp *Interpreter) SetDiagnosticTracing(enabled bool) {
+	interp.diagnosticTracing = enabled
+	interp.callStack = nil
+	interp.lastPanicStack = nil
+	if !enabled {
+		interp.diagnosticJIT = false
+	}
+}
+
+func (interp *Interpreter) DiagnosticStack() []errfmt.StackFrame {
+	if interp == nil {
+		return nil
+	}
+	frames := interp.callStack
+	if len(interp.lastPanicStack) > 0 {
+		frames = interp.lastPanicStack
+	}
+	return append([]errfmt.StackFrame(nil), frames...)
+}
+
+func (interp *Interpreter) SetDiagnosticJIT(enabled bool) {
+	interp.diagnosticJIT = enabled && interp.diagnosticTracing
+}
+func (interp *Interpreter) getSourceLines() []string { return interp.sourceLines }
+
+func (interp *Interpreter) updateNodeLocation(node *ast.Node) {
+	if node == nil || node.Line <= 0 {
+		return
+	}
+	interp.currentLine = node.Line
+	interp.currentCol = node.Col
+	if interp.diagnosticTracing && len(interp.callStack) > 0 {
+		frame := &interp.callStack[len(interp.callStack)-1]
+		frame.Line = node.Line
+		frame.Col = node.Col
+		if interp.filename != "" {
+			frame.File = interp.filename
+		}
+	}
+}
+
+func (interp *Interpreter) pushCallFrame(fn *Function, body *ast.Node) {
+	if !interp.diagnosticTracing {
+		return
+	}
+	name := "<anonymous>"
+	file := interp.filename
+	if fn != nil {
+		if fn.Name != "" {
+			name = fn.Name
+		}
+		if fn.SourceFile != "" {
+			file = fn.SourceFile
+		}
+	}
+	frame := errfmt.StackFrame{FnName: name, File: file}
+	if body != nil {
+		frame.Line = body.Line
+		frame.Col = body.Col
+		if frame.Line == 0 && len(body.Body_) > 0 && body.Body_[0] != nil {
+			frame.Line = body.Body_[0].Line
+			frame.Col = body.Body_[0].Col
+		}
+	}
+	interp.callStack = append(interp.callStack, frame)
+}
+
+func (interp *Interpreter) popCallFrame() {
+	if !interp.diagnosticTracing || len(interp.callStack) == 0 {
+		return
+	}
+	interp.callStack = interp.callStack[:len(interp.callStack)-1]
+}
 
 func (interp *Interpreter) runtimeError(kind errfmt.ErrorKind, code, msg string, node *ast.Node, similar []string) *errfmt.LunexError {
 	line, col := 0, 0
@@ -142,6 +224,10 @@ func (interp *Interpreter) runtimeError(kind errfmt.ErrorKind, code, msg string,
 		line = interp.currentLine
 		col = interp.currentCol
 	}
+	var stack []errfmt.StackFrame
+	if interp.diagnosticTracing && len(interp.callStack) > 0 {
+		stack = append([]errfmt.StackFrame(nil), interp.callStack...)
+	}
 	return &errfmt.LunexError{
 		Message: msg,
 		File:    interp.filename,
@@ -151,6 +237,7 @@ func (interp *Interpreter) runtimeError(kind errfmt.ErrorKind, code, msg string,
 		Code:    code,
 		Lines:   interp.sourceLines,
 		Similar: similar,
+		Stack:   stack,
 	}
 }
 
@@ -189,6 +276,10 @@ func (interp *Interpreter) RegisterNative(name string, val *Value) {
 	interp.globals.Define("__native_"+name+"__", val, true)
 }
 
+func (interp *Interpreter) CallFunctionValue(fnVal *Value, args []*Value) (*Value, error) {
+	return interp.callFunctionValue(fnVal, args, nil)
+}
+
 func (interp *Interpreter) GetModule(name string) (*Value, bool) {
 	interp.mu.RLock()
 	v, ok := interp.modules[name]
@@ -205,7 +296,7 @@ func (interp *Interpreter) SetGlobal(name string, val *Value) {
 			if obj.ObjVal == nil {
 				obj.ObjVal = make(map[string]*Value)
 			}
-			obj.ObjVal[child] = val
+			obj.Set(child, val)
 			return
 		}
 	}

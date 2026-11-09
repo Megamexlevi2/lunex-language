@@ -17,6 +17,7 @@ type oracleResult struct {
 	slots     [MaxSlots]float64
 	counters  [MaxCounter]int64
 	used      int64
+	hotCount  int64
 	status    int64
 	errorNode int64
 }
@@ -35,6 +36,7 @@ func oracleRun(p *Program, ctx *Context) (res oracleResult, ok bool) {
 	r.slots = ctx.Slots
 	r.counters = ctx.Counters
 	r.used = ctx.Used
+	r.hotCount = ctx.HotCount
 	r.errorNode = ctx.ErrorNode
 	budget := ctx.Budget
 	stack := make([]float64, 0, 32)
@@ -146,6 +148,15 @@ func oracleRun(p *Program, ctx *Context) (res oracleResult, ok bool) {
 			}
 			if jump {
 				pc = p.Labels[in.Target]
+			}
+		case OpHotPoll:
+			if p.Tier < 2 {
+				r.hotCount++
+				if r.hotCount >= HotLoopPollLimit {
+					r.status = StatusTierUp
+					r.errorNode = int64(in.ErrorNode)
+					return r, true
+				}
 			}
 		case OpTick:
 			n := int64(in.A)
@@ -273,6 +284,11 @@ func verifyCode(p *Program, code []byte, label string) error {
 			if err := runMachine(code, got); err != nil {
 				return err
 			}
+			if got.Status == StatusSideExit {
+				if err := p.Resume(got); err != nil {
+					return err
+				}
+			}
 			if got.Status == StatusDeopt {
 				continue
 			}
@@ -281,6 +297,9 @@ func verifyCode(p *Program, code []byte, label string) error {
 			}
 			if got.Used != want.used {
 				return fmt.Errorf("%s self-check: used %d, expected %d (seed %d budget %d)", label, got.Used, want.used, seed, budget)
+			}
+			if got.HotCount != want.hotCount {
+				return fmt.Errorf("%s self-check: hot-loop count %d, expected %d (seed %d budget %d)", label, got.HotCount, want.hotCount, seed, budget)
 			}
 			if (want.status == StatusTimeout || want.status == StatusDivisionByZero) && got.ErrorNode != want.errorNode {
 				return fmt.Errorf("%s self-check: error node %d, expected %d (seed %d budget %d)", label, got.ErrorNode, want.errorNode, seed, budget)

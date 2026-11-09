@@ -1,6 +1,6 @@
 # Language Reference
 
-Complete reference for the Lunex programming language, version 0.9.4.
+Complete reference for the Lunex programming language, version 0.9.6-beta.
 
 ---
 
@@ -13,7 +13,7 @@ Complete reference for the Lunex programming language, version 0.9.4.
 
 /*
 Multi-line comment
-/*
+*/
 ```
 
 ### Identifiers
@@ -58,11 +58,39 @@ sections below document the ones with confirmed, working behavior.
 |----------|------------------------------------------|
 | Number   | `0` `42` `3.14` `-1` `1e6`              |
 | String   | `"hello"` `"line\nbreak"` `"tab\there"` |
-| Template | `` `Hello, ${name}!` ``                 |
+| Template | `` `Hello, !{name}!` ``                 |
 | Boolean  | `true` `false`                           |
 | Null     | `null`                                   |
 | Array    | `[1, 2, 3]`                              |
 | Object   | `{ key: value, other: 42 }`              |
+
+### String interpolation
+
+Any string literal — `"..."`, `'...'`, or `` `...` `` — can embed an
+expression with `!{expr}`. The expression is evaluated and its result is
+converted to a string and inserted in place:
+
+```lx
+val name = "Lunex"
+val age  = 30
+
+io.log("Hello, !{name}! You are !{age} years old.")
+io.log('Hello, !{name}!')
+io.log(`Hello, !{name}!`)
+```
+
+All three quote styles behave the same way once `!{...}` is used inside
+them — backticks are not a separate interpolation mechanism, just another
+way to quote a string. A string with no `!{...}` in it is a plain string
+regardless of which quote character it uses.
+
+To include a literal `!{` without triggering interpolation, escape the `!`:
+`"price: \!{10}"`.
+
+> **Migrating from `${...}`:** earlier versions of Lunex only interpolated
+> inside backtick strings using `${expr}`. That syntax has been replaced by
+> `!{expr}`, which now works in every string form. Existing code using
+> `` `...${expr}...` `` needs to be updated to `` `...!{expr}...` ``.
 
 ---
 

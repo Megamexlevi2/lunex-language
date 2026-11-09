@@ -17,10 +17,7 @@ func (interp *Interpreter) evalNew(node *ast.Node, env *Environment) (*Value, er
 		return interp.callClass(calleeVal.ClsVal, args, env)
 	}
 	if calleeVal.Tag == TypeFunction {
-		inst := &Instance{
-			Class:  &Class{Name: calleeVal.FnVal.Name},
-			Fields: make(map[string]*Value),
-		}
+		inst := NewInstance(&Class{Name: calleeVal.FnVal.Name})
 		instVal := InstVal(inst)
 		_, err := interp.callFunctionValue(calleeVal, args, instVal)
 		if err != nil {

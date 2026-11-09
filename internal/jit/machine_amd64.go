@@ -290,7 +290,10 @@ func (w *x86Writer) callCodeStart() {
 	w.u32(uint32(int32(rel)))
 }
 
-func (w *x86Writer) callSelf(program *Program, in Instruction, returnLabel int) error {
+func (w *x86Writer) callSelf(program *Program, in Instruction, returnLabel, resumePC, stackDepth int, slotRegisters map[int]byte) error {
+	for slot, register := range slotRegisters {
+		w.movsdStore(regCtx, ctxSlotsOff+slot*8, register)
+	}
 	depthOK := (1 << 27) + len(w.b)
 	w.movqLoad(0, regCtx, ctxFrameDepthOff)
 	w.movqLoad(1, regCtx, ctxFrameLimitOff)
@@ -328,16 +331,30 @@ func (w *x86Writer) callSelf(program *Program, in Instruction, returnLabel int) 
 	w.movqStore(regCtx, ctxStatusOff, 0)
 	w.movqStore(regCtx, ctxErrorNodeOff, 1)
 	w.movqStore(regCtx, ctxUsedOff, 2)
+	for slot, register := range slotRegisters {
+		w.movsdLoad(register, regCtx, ctxSlotsOff+slot*8)
+	}
 	w.u8(0x41)
 	w.u8(0x5B)
 	w.u8(0x41)
 	w.u8(0x5A)
 	w.movqLoad(0, regCtx, ctxStatusOff)
+	sideExit := (1 << 27) + len(w.b)
+	w.cmpRegImm8(0, byte(StatusSideExit))
+	w.jcc(0x84, sideExit)
 	w.u8(0x48)
 	w.u8(0x85)
 	w.u8(0xC0)
 	w.jcc(0x85, returnLabel)
 	w.subRegImm32(regStack, int32(in.A*8))
+	done := (1 << 27) + len(w.b)
+	w.jmp(done)
+	w.mark(sideExit)
+	w.movqImmMem(regCtx, ctxResumePCOff, uint64(resumePC))
+	w.movqImmMem(regCtx, ctxStackDepthOff, uint64(stackDepth))
+	w.movqImmMem(regCtx, ctxErrorNodeOff, uint64(in.ErrorNode))
+	w.jmp(returnLabel)
+	w.mark(done)
 	w.movsdStore(regStack, 0, xmm0)
 	w.addRegImm8(regStack, 8)
 	return nil
@@ -392,6 +409,21 @@ func (w *x86Writer) emitMathMinMax(id int, newLocal func() int) {
 }
 
 func (w *x86Writer) emitNativeMath(in Instruction, newLocal func() int) error {
+	if in.A == MathAbs || in.A == MathSqrt {
+		w.movsdLoad(xmm0, regStack, -8)
+		if in.A == MathAbs {
+			w.movqImmReg(0, 0x7fffffffffffffff)
+			w.movqRegToXmm(xmm1, 0)
+			w.sseBinary(0x66, 0x54, xmm0, xmm1)
+		} else {
+			w.u8(0xF2)
+			w.u8(0x0F)
+			w.u8(0x51)
+			w.u8(0xC0 | (xmm0 << 3) | xmm0)
+		}
+		w.movsdStore(regStack, -8, xmm0)
+		return nil
+	}
 	if in.A == MathSign {
 		w.emitMathSign(newLocal)
 		return nil
@@ -444,6 +476,10 @@ func (w *x86Writer) emitNativeMath(in Instruction, newLocal func() int) error {
 }
 
 func emitMachineLegacy(p *Program) ([]byte, error) {
+	depths, depthErr := bytecodeStackDepths(p)
+	if depthErr != nil {
+		return nil, depthErr
+	}
 	w := &x86Writer{labels: make(map[int]int)}
 	returnLabel := 1 << 29
 	labelAt := make(map[int][]int)
@@ -581,7 +617,10 @@ func emitMachineLegacy(p *Program) ([]byte, error) {
 			w.setStatus(StatusDivisionByZero, int64(in.ErrorNode))
 			w.jmp(returnLabel)
 			w.mark(deopt)
-			w.setStatus(StatusDeopt, int64(in.ErrorNode))
+			w.addRegImm8(regStack, 8)
+			w.movqImmMem(regCtx, ctxResumePCOff, uint64(i))
+			w.movqImmMem(regCtx, ctxStackDepthOff, uint64(depths[i]))
+			w.setStatus(StatusSideExit, int64(in.ErrorNode))
 			w.jmp(returnLabel)
 			w.mark(done)
 
@@ -645,6 +684,18 @@ func emitMachineLegacy(p *Program) ([]byte, error) {
 				w.jmp(in.Target)
 				w.mark(skip)
 			}
+		case OpHotPoll:
+			if p.Tier < 2 {
+				pollDone := newLocal()
+				w.addMemOne(regCtx, ctxHotCountOff)
+				w.movqLoad(0, regCtx, ctxHotCountOff)
+				w.movqImmReg(1, uint64(HotLoopPollLimit))
+				w.cmpRegReg(0, 1)
+				w.jcc(0x8C, pollDone)
+				w.setStatus(StatusTierUp, int64(in.ErrorNode))
+				w.jmp(returnLabel)
+				w.mark(pollDone)
+			}
 		case OpTick:
 			if in.A <= 0 {
 				continue
@@ -692,7 +743,10 @@ func emitMachineLegacy(p *Program) ([]byte, error) {
 			w.movqStore(regCtx, ctxCountersOff+in.A*8, 0)
 			w.jmp(done)
 			w.mark(deopt)
-			w.setStatus(StatusDeopt, int64(in.ErrorNode))
+			w.addRegImm8(regStack, 8)
+			w.movqImmMem(regCtx, ctxResumePCOff, uint64(i))
+			w.movqImmMem(regCtx, ctxStackDepthOff, uint64(depths[i]))
+			w.setStatus(StatusSideExit, int64(in.ErrorNode))
 			w.jmp(returnLabel)
 			w.mark(done)
 		case OpRepeatCheck:
@@ -719,7 +773,7 @@ func emitMachineLegacy(p *Program) ([]byte, error) {
 			if !p.FunctionMode {
 				return fail(i, fmt.Errorf("self-call opcode outside function"))
 			}
-			if err := w.callSelf(p, in, returnLabel); err != nil {
+			if err := w.callSelf(p, in, returnLabel, i, depths[i], nil); err != nil {
 				return fail(i, err)
 			}
 		case OpReturnValue:

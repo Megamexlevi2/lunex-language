@@ -71,6 +71,7 @@ func (interp *Interpreter) evalCall(node *ast.Node, env *Environment) (*Value, e
 					if err != nil {
 						return nil, err
 					}
+					interp.updateNodeLocation(node)
 					return interp.callFunctionValue(FuncVal(method), superArgs, thisVal)
 				}
 			}
@@ -148,6 +149,7 @@ func (interp *Interpreter) evalCall(node *ast.Node, env *Environment) (*Value, e
 		return nil, err
 	}
 
+	interp.updateNodeLocation(node)
 	return interp.callFunctionValue(fnVal, args, thisVal)
 }
 
@@ -268,9 +270,13 @@ func (interp *Interpreter) callUserFunction(fn *Function, args []*Value, thisVal
 	var t0 int64
 	if fn.Name != "" {
 		fnProf = interp.profiler.GetOrCreate(fn.Name)
+		fnProf.CountCall()
 		if fnProf.ShouldSample() {
 			t0 = time.Now().UnixNano()
 		}
+	}
+	if fnProf != nil && t0 != 0 {
+		defer func() { fnProf.RecordSample(time.Now().UnixNano() - t0) }()
 	}
 
 	savedDefers := interp.defers
@@ -281,11 +287,20 @@ func (interp *Interpreter) callUserFunction(fn *Function, args []*Value, thisVal
 		interp.defers = savedDefers
 		return Undefined, nil
 	}
+	interp.pushCallFrame(fn, bodyNode)
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			if interp.diagnosticTracing && len(interp.lastPanicStack) == 0 {
+				interp.lastPanicStack = append([]errfmt.StackFrame(nil), interp.callStack...)
+			}
+			interp.popCallFrame()
+			panic(recovered)
+		}
+		interp.popCallFrame()
+	}()
+
 	if result, handled, err := interp.runFunctionJIT(fn, bodyNode, args); handled {
 		interp.defers = savedDefers
-		if fnProf != nil && t0 != 0 {
-			fnProf.Record(time.Now().UnixNano() - t0)
-		}
 		return result, err
 	}
 
@@ -360,11 +375,6 @@ func (interp *Interpreter) callUserFunction(fn *Function, args []*Value, thisVal
 		} else if de.node.Expr != nil {
 			interp.evalExpr(de.node.Expr, de.env)
 		}
-	}
-
-	if fnProf != nil && t0 != 0 {
-		elapsed := time.Now().UnixNano() - t0
-		fnProf.Record(elapsed)
 	}
 
 	if execErr != nil {
@@ -453,7 +463,7 @@ func (interp *Interpreter) bindDestructure(pattern interface{}, val *Value, env 
 						}
 					}
 				} else if val.InstVal != nil {
-					for key, fieldVal := range val.InstVal.Fields {
+					for key, fieldVal := range val.InstVal.OwnFields() {
 						if _, skip := excluded[key]; !skip {
 							rest[key] = fieldVal
 						}

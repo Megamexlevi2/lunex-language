@@ -14,7 +14,7 @@ func mapObject(m *ntlMap) *Value {
 			}
 			m.data[key] = args[1]
 			m.mu.Unlock()
-			this.ObjVal["size"] = NumberVal(float64(len(m.data)))
+			this.Set("size", NumberVal(float64(len(m.data))))
 			return this, nil
 		}}),
 		"get": FuncVal(&Function{Name: "get", Native: func(args []*Value, this *Value) (*Value, error) {
@@ -48,7 +48,7 @@ func mapObject(m *ntlMap) *Value {
 			delete(m.data, key)
 			m.mu.Unlock()
 			if ok {
-				this.ObjVal["size"] = NumberVal(float64(len(m.data)))
+				this.Set("size", NumberVal(float64(len(m.data))))
 			}
 			return BoolVal(ok), nil
 		}}),
@@ -57,7 +57,7 @@ func mapObject(m *ntlMap) *Value {
 			m.data = make(map[string]*Value)
 			m.keyOrder = nil
 			m.mu.Unlock()
-			this.ObjVal["size"] = NumberVal(0)
+			this.Set("size", NumberVal(0))
 			return Undefined, nil
 		}}),
 		"keys": FuncVal(&Function{Name: "keys", Native: func(args []*Value, this *Value) (*Value, error) {
@@ -125,7 +125,7 @@ func setObject(s *ntlSet) *Value {
 			s.mu.Lock()
 			s.items[key] = args[0]
 			s.mu.Unlock()
-			this.ObjVal["size"] = NumberVal(float64(len(s.items)))
+			this.Set("size", NumberVal(float64(len(s.items))))
 			return this, nil
 		}}),
 		"has": FuncVal(&Function{Name: "has", Native: func(args []*Value, this *Value) (*Value, error) {
@@ -147,7 +147,7 @@ func setObject(s *ntlSet) *Value {
 			delete(s.items, key)
 			s.mu.Unlock()
 			if ok {
-				this.ObjVal["size"] = NumberVal(float64(len(s.items)))
+				this.Set("size", NumberVal(float64(len(s.items))))
 			}
 			return BoolVal(ok), nil
 		}}),
@@ -155,7 +155,7 @@ func setObject(s *ntlSet) *Value {
 			s.mu.Lock()
 			s.items = make(map[string]*Value)
 			s.mu.Unlock()
-			this.ObjVal["size"] = NumberVal(0)
+			this.Set("size", NumberVal(0))
 			return Undefined, nil
 		}}),
 		"forEach": FuncVal(&Function{Name: "forEach", Native: func(args []*Value, this *Value) (*Value, error) {

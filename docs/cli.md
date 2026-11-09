@@ -3,36 +3,6 @@
 Complete reference for the `lunex` command-line tool and its built-in package manager.
 
 ---
-
-## Global flags
-
-| Flag               | Description                                              |
-|--------------------|----------------------------------------------------------|
-| `--debug`, `-d`    | Enable debug output (AST, IR, and runtime traces)        |
-| `--verbose`, `-V`  | Verbose debug output (implies `--debug`)                 |
-| `--no-cache`       | Skip both disk and memory caches; force a fresh compile  |
-| `--version`        | Print version and exit                                   |
-| `--help`           | Print usage and exit                                     |
-
-### Native FFI control
-
-FFI is disabled by default. The switch is a command-line prefix and applies
-only to the current Lunex process. It is not read from source code or from an
-environment variable.
-
-```bash
-lunex ffi = on run main.lx
-lunex ffi = off run main.lx
-```
-
-`ffi = on` is intentionally accepted only before the command. Values supplied
-inside a Lunex program or through process environment variables do not change
-the FFI state. Build scripts use `CGO_ENABLED=0`. Android arm64 builds use the Android Go
-target, position-independent executable mode, and the Bionic ABI. The FFI backend
-uses goffi through the purego-compatible layer and does not require a C compiler.
-
----
-
 ## Commands
 
 ### `lunex run`
@@ -61,6 +31,33 @@ Supported file extensions:
 lunex run main.lx
 lunex run build/app.nax
 lunex run --emit ast main.lx
+```
+
+---
+
+### `lunex fmt` / `lunex format`
+
+Format a Lunex source file with syntax-aware token layout, AST-guided statement boundaries, and a source-integrity verifier. `format` is an alias for `fmt`.
+
+```bash
+lunex fmt <file.lx> [--check|--stdout|--write]
+lunex format <file.lx> [--check|--stdout|--write]
+```
+
+By default, the command formats the file in place. `--write` explicitly selects the same in-place behavior. `--check` checks whether the file is already formatted without writing changes; it exits with status 1 when formatting changes are needed or validation fails. `--stdout` prints the verified result without changing the file. `--check` and `--stdout` cannot be used together.
+
+The formatter tokenizes and parses the source with the Lunex lexer and parser, then uses AST source positions to distinguish statements, blocks, and object or array literals. It normalizes indentation, operator spacing, comma spacing, control-flow blocks, and long collections while preserving each token's original spelling. Comments, string and template literals, and source line-ending style are retained. The verifier compares token spellings and values, comment contents, and AST structure while ignoring source-position changes, and it parses the formatted result again. If validation fails, the formatter falls back to conservative whitespace changes; if the candidate still cannot be verified, the CLI leaves the file unchanged and exits with an error.
+
+Lunex line comments use `/!`; block comments use `/* ... */`. The formatter preserves both forms, including their contents.
+
+**Examples:**
+
+```bash
+lunex fmt main.lx
+lunex fmt main.lx --write
+lunex fmt main.lx --check
+lunex fmt main.lx --stdout
+lunex format main.lx
 ```
 
 ---
@@ -184,11 +181,17 @@ lunex platform
 
 ### `lunex runtimes`
 
-List the available Lunex execution engine.
+Show the execution engine used by the current Lunex build and the native JIT capabilities of the current platform.
 
 ```
 lunex runtimes
 ```
+
+The report distinguishes the Go-based AST interpreter from the adaptive native JIT. The AST interpreter is the default execution engine and the universal fallback. On supported `amd64` and `arm64` targets, eligible hot functions and loops can be compiled to native machine code using Tier 1 baseline and Tier 2 specialized compilation.
+
+The report also displays the active JIT settings: enabled state, hotness threshold, native-code verification, and compilation tracing. The `LUNEX_NATIVE`, `LUNEX_NATIVE_HOT`, `LUNEX_NATIVE_VERIFY`, and `LUNEX_NATIVE_TRACE` environment variables configure these settings. The global `--jit` and `--no-jit` options override the enabled state for the current process.
+
+`.nax` archives and cached compiled objects are serialized Lunex program data containing AST information; they are not independent execution engines or a separate bytecode VM. They use the same interpreter and can use the native JIT for eligible code.
 
 ---
 
@@ -281,11 +284,12 @@ files), separate from the package module stores shown by `lunex env`.
 | `LUNEX_USE_CWD_CACHE`      | Set to `1` to use a cache directory relative to the current working directory instead of the home-based one |
 | `NTL_DEBUG`                | Set automatically by `lunex debug`; set to `1` yourself to get the same verbose diagnostics from any command |
 | `LUNEX_NATIVE`             | Set to `0` to disable the native loop JIT (default: enabled)      |
-| `LUNEX_NATIVE_HOT`         | Loop iterations before native compilation (default: `32`)         |
+| `LUNEX_NATIVE_HOT`         | Loop/function hotness threshold before background native compilation (default: `32`) |
 | `LUNEX_NATIVE_TRACE`       | Set to `1` to print JIT decisions to stderr                       |
 | `LUNEX_NATIVE_VERIFY`      | Set to `0` to skip the compile-time native self-check (default: enabled) |
-| `GOGC`                     | Go GC percentage (Lunex sets `50` by default if unset)            |
-| `GOMEMLIMIT`               | Go memory limit (Lunex sets `200MiB` by default if unset)         |
+| `GOGC`                     | Explicit Go GC percentage; if unset, Lunex adjusts it adaptively  |
+| `GOMEMLIMIT`               | Go memory limit (Lunex uses a `200MiB` default unless platform tuning applies) |
+| `LUNEX_GC_ADAPTIVE`         | Set to `0` to disable adaptive garbage-collection tuning          |
 
 There is no environment variable for enabling `std.ffi`. FFI activation is
 handled only by the command-line prefix described above.
@@ -299,3 +303,83 @@ handled only by the command-line prefix described above.
 | `0`  | Success                              |
 | `1`  | Compile or runtime error             |
 | `2`  | Usage error (bad flag or missing argument) |
+
+
+## Runtime debugger
+
+`lunex debug` runs a `.lx` source file or `.nax` application with source-aware Lunex call stacks, sampled
+function profiling, runtime resource snapshots, and optional Go runtime
+artifacts. Diagnostics are written to standard error; the program keeps its
+normal standard output.
+
+```bash
+lunex debug app.lx
+lunex debug app.lx --report debug-report.json
+lunex debug app.lx --cpu-profile cpu.pprof --mem-profile heap.pprof
+lunex debug app.lx --alloc-profile allocs.pprof --block-profile block.pprof --mutex-profile mutex.pprof
+lunex debug app.lx --trace runtime.trace --goroutines goroutines.txt
+lunex debug server.lx --pprof 127.0.0.1:6060
+lunex debug app.lx --preserve-jit --cpu-profile production-cpu.pprof
+lunex debug app.lx --report debug-report.json -- arg1 arg2
+```
+
+| Option | Description |
+|---|---|
+| `--cpu-profile <file>` | Capture a CPU profile that can be inspected with `go tool pprof`. |
+| `--mem-profile <file>` | Capture the in-use Go heap profile. |
+| `--alloc-profile <file>` | Capture cumulative allocation samples. |
+| `--block-profile <file>` | Capture goroutine blocking data (sampling at approximately 1 ms). |
+| `--mutex-profile <file>` | Capture contended mutex data. |
+| `--trace <file>` | Capture scheduler, goroutine, and runtime events in a Go execution trace. |
+| `--goroutines <file>` | Save all goroutine stacks when execution ends. |
+| `--report <file>` | Save a JSON report with source SHA-256, compiler/runtime timings, error details, Lunex stack, function samples, and memory/GC metrics. |
+| `--pprof <host:port>` | Serve live Go pprof endpoints and Lunex function/runtime snapshots. Only `localhost` and loopback IPs are accepted. |
+| `--preserve-jit` | Preserve normal JIT execution. Optimized frames and source locations may be less precise; use this when reproducing JIT-only issues or profiling production-like execution. |
+| `--profile-limit <n>` | Limit the displayed function profile to `n` entries. |
+| `--no-profile` | Hide the function profile table. |
+| `--no-color` | Disable ANSI colors in diagnostics. |
+| `--` | End debugger options; forward the remaining arguments to the program. |
+
+Function timings are sampled and weighted, so they are useful for locating
+hot functions but are estimates rather than exact per-call measurements. By
+default, diagnostic tracing bypasses JIT-optimized paths to preserve source
+locations and call stacks. Use `--preserve-jit` to keep the production execution path;
+optimized frames may then be missing from the Lunex call stack. CPU, heap, allocation, block, and mutex profiles are Go runtime profiles; they expose
+runtime-level costs and can be analyzed separately from the Lunex function
+profile. Block profiling samples waits at approximately 1 ms; mutex profiling
+records contended locks. These instruments add overhead, so enable only the
+profiles needed for an investigation. The JSON report
+records both the source-aware Lunex stack and, when a Go panic occurs, the Go
+stack. The optional pprof server remains local to the machine and exposes
+`/debug/pprof/`, `/debug/lunex/functions`, and `/debug/lunex/runtime` while the
+program is running. Use a local port-forward when diagnosing a remote process;
+the debugger refuses public bind addresses.
+
+## Global flags
+
+| Flag               | Description                                              |
+|--------------------|----------------------------------------------------------|
+| `--debug`, `-d`    | Enable runtime diagnostic output                       |
+| `--verbose`, `-V`  | Verbose debug output (implies `--debug`)                 |
+| `--no-cache`       | Skip both disk and memory caches; force a fresh compile  |
+| `--version`        | Print version and exit                                   |
+| `--help`           | Print usage and exit                                     |
+
+### Native FFI control
+
+FFI is disabled by default. The switch is a command-line prefix and applies
+only to the current Lunex process. It is not read from source code or from an
+environment variable.
+
+```bash
+lunex ffi = on run main.lx
+lunex ffi = off run main.lx
+```
+
+`ffi = on` is intentionally accepted only before the command. Values supplied
+inside a Lunex program or through process environment variables do not change
+the FFI state. Build scripts use `CGO_ENABLED=0`. Android arm64 builds use the Android Go
+target, position-independent executable mode, and the Bionic ABI. The FFI backend
+uses goffi through the purego-compatible layer and does not require a C compiler.
+
+---

@@ -249,10 +249,7 @@ func (interp *Interpreter) execNode(node *ast.Node, env *Environment) (*Value, e
 	if node == nil {
 		return Undefined, nil
 	}
-	if node.Line > 0 {
-		interp.currentLine = node.Line
-		interp.currentCol = node.Col
-	}
+	interp.updateNodeLocation(node)
 	switch node.Type {
 	case ast.Program:
 		return interp.execBlock(node.Body_, env)

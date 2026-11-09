@@ -11,7 +11,7 @@ const (
 	t2Tmp0Xmm   = 6
 	t2Tmp1Xmm   = 6
 	t2Tmp2Xmm   = 6
-	t2MaxStack  = 14
+	t2MaxStack  = 12
 )
 
 func (w *x86Writer) xorpdXmm(dst, src byte) {
@@ -57,7 +57,7 @@ func (w *x86Writer) syncTier2Counters() {
 
 func emitMachineTier2(p *Program) ([]byte, error) {
 	for _, in := range p.Bytecode {
-		if in.Op == OpCallSelf || in.Op == OpMath {
+		if in.Op == OpMath && in.A != MathAbs && in.A != MathSqrt {
 			return emitMachineLegacy(p)
 		}
 	}
@@ -99,6 +99,10 @@ func emitMachineTier2(p *Program) ([]byte, error) {
 
 	w.movqLoad(t2BudgetReg, regCtx, ctxBudgetOff)
 	w.movqLoad(t2UsedReg, regCtx, ctxUsedOff)
+	slotRegisters := chooseHotSlotRegisters(p, []byte{14, 15})
+	for slot, register := range slotRegisters {
+		w.movsdLoad(register, regCtx, ctxSlotsOff+slot*8)
+	}
 
 	for i, in := range p.Bytecode {
 		for _, label := range labelAt[i] {
@@ -118,11 +122,23 @@ func emitMachineTier2(p *Program) ([]byte, error) {
 		case OpPushConst:
 			w.movsdLoad(x(d), regCtx, ctxConstsOff+in.A*8)
 		case OpLoadSlot:
-			w.movsdLoad(x(d), regCtx, ctxSlotsOff+in.A*8)
+			if register, ok := slotRegisters[in.A]; ok {
+				w.movsdRR(x(d), register)
+			} else {
+				w.movsdLoad(x(d), regCtx, ctxSlotsOff+in.A*8)
+			}
 		case OpStoreSlot:
-			w.movsdStore(regCtx, ctxSlotsOff+in.A*8, x(d-1))
+			if register, ok := slotRegisters[in.A]; ok {
+				w.movsdRR(register, x(d-1))
+			} else {
+				w.movsdStore(regCtx, ctxSlotsOff+in.A*8, x(d-1))
+			}
 		case OpStoreSlotKeep:
-			w.movsdStore(regCtx, ctxSlotsOff+in.A*8, x(d-1))
+			if register, ok := slotRegisters[in.A]; ok {
+				w.movsdRR(register, x(d-1))
+			} else {
+				w.movsdStore(regCtx, ctxSlotsOff+in.A*8, x(d-1))
+			}
 		case OpDup:
 			w.movsdRR(x(d), x(d-1))
 		case OpSwap:
@@ -191,6 +207,41 @@ func emitMachineTier2(p *Program) ([]byte, error) {
 		case OpNeg:
 			w.movsdLoad(t2Tmp0Xmm, regCtx, ctxConstsOff+8)
 			w.xorpdXmm(x(d-1), t2Tmp0Xmm)
+		case OpMath:
+			if d < 1 || (in.A != MathAbs && in.A != MathSqrt) {
+				return fail(i, fmt.Errorf("unsupported tier 2 math operation %d", in.A))
+			}
+			if in.A == MathAbs {
+				w.movqImmReg(0, 0x7fffffffffffffff)
+				w.movqRegToXmm(t2Tmp0Xmm, 0)
+				w.sseBinary(0x66, 0x54, x(d-1), t2Tmp0Xmm)
+			} else {
+				reg := x(d - 1)
+				w.u8(0xF2)
+				if reg >= 8 {
+					w.u8(x86Rex(false, reg >= 8, reg >= 8))
+				}
+				w.u8(0x0F)
+				w.u8(0x51)
+				w.u8(0xC0 | ((reg & 7) << 3) | (reg & 7))
+			}
+		case OpCallSelf:
+			if !p.FunctionMode {
+				return fail(i, fmt.Errorf("self-call opcode outside function"))
+			}
+			for index := 0; index < d; index++ {
+				w.movsdStore(regCtx, ctxStackOff+index*8, x(index))
+			}
+			w.leaRegDisp32(regStack, regCtx, ctxStackOff+d*8)
+			if err := w.callSelf(p, in, returnLabel, i, d, slotRegisters); err != nil {
+				return fail(i, err)
+			}
+			w.movqLoad(t2BudgetReg, regCtx, ctxBudgetOff)
+			w.movqLoad(t2UsedReg, regCtx, ctxUsedOff)
+			resultDepth := d - in.A + 1
+			for index := 0; index < resultDepth; index++ {
+				w.movsdLoad(x(index), regCtx, ctxStackOff+index*8)
+			}
 		case OpCompare:
 			trueLabel := newLocal()
 			falseLabel := newLocal()
@@ -237,6 +288,7 @@ func emitMachineTier2(p *Program) ([]byte, error) {
 				w.jmp(in.Target)
 				w.mark(skip)
 			}
+		case OpHotPoll:
 		case OpTick:
 			if in.A <= 0 {
 				continue
@@ -266,8 +318,13 @@ func emitMachineTier2(p *Program) ([]byte, error) {
 			w.movqStore(regCtx, ctxCountersOff+in.A*8, 0)
 			w.jmp(done)
 			w.mark(deopt)
+			for stackIndex := 0; stackIndex < d; stackIndex++ {
+				w.movsdStore(regCtx, ctxStackOff+stackIndex*8, x(stackIndex))
+			}
+			w.movqImmMem(regCtx, ctxResumePCOff, uint64(i))
+			w.movqImmMem(regCtx, ctxStackDepthOff, uint64(d))
 			w.syncTier2Counters()
-			w.setStatus(StatusDeopt, int64(in.ErrorNode))
+			w.setStatus(StatusSideExit, int64(in.ErrorNode))
 			w.jmp(returnLabel)
 			w.mark(done)
 		case OpRepeatCheck:
@@ -306,6 +363,9 @@ func emitMachineTier2(p *Program) ([]byte, error) {
 		w.mark(label)
 	}
 	w.mark(returnLabel)
+	for slot, register := range slotRegisters {
+		w.movsdStore(regCtx, ctxSlotsOff+slot*8, register)
+	}
 	w.syncTier2Counters()
 	w.u8(0xC3)
 	if err := w.patchAll(); err != nil {

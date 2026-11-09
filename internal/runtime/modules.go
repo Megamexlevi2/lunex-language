@@ -455,7 +455,7 @@ func (interp *Interpreter) execExport(node *ast.Node, env *Environment) (*Value,
 			return nil, err
 		}
 		if moduleValue, ok := env.GetLocal("__module__"); ok && moduleValue != nil && moduleValue.Tag == TypeObject {
-			moduleValue.ObjVal["default"] = value
+			moduleValue.Set("default", value)
 			return Undefined, nil
 		}
 		env.Define("__module__", ObjectVal(map[string]*Value{"default": value}), false)
@@ -477,7 +477,7 @@ func (interp *Interpreter) execExport(node *ast.Node, env *Environment) (*Value,
 		if !exists {
 			return nil, errfmt.UnresolvedExportError(spec.Imported, interp.filename, node.Line, node.Col, interp.sourceLines)
 		}
-		moduleValue.ObjVal[spec.Exported] = value
+		moduleValue.Set(spec.Exported, value)
 	}
 	return Undefined, nil
 }

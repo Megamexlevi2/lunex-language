@@ -167,7 +167,7 @@ func (interp *Interpreter) registerBuiltins() {
 					keys = append(keys, StringVal(k))
 				}
 			} else if obj.Tag == TypeInstance {
-				for k := range obj.InstVal.Fields {
+				for k := range obj.InstVal.OwnFields() {
 					keys = append(keys, StringVal(k))
 				}
 			}
@@ -210,7 +210,7 @@ func (interp *Interpreter) registerBuiltins() {
 			for _, src := range args[1:] {
 				if src.Tag == TypeObject {
 					for k, v := range src.ObjVal {
-						target.ObjVal[k] = v
+						target.Set(k, v)
 					}
 				}
 			}
@@ -226,7 +226,7 @@ func (interp *Interpreter) registerBuiltins() {
 			obj := ObjectVal(nil)
 			if len(args) > 0 && args[0].Tag == TypeObject {
 				for k, v := range args[0].ObjVal {
-					obj.ObjVal[k] = v
+					obj.Set(k, v)
 				}
 			}
 			return obj, nil
@@ -274,7 +274,12 @@ func (interp *Interpreter) registerBuiltins() {
 		"exp":    mathFn1("exp", math.Exp),
 		"sign":   mathFn1("sign", mathSign),
 		"trunc":  mathFn1("trunc", math.Trunc),
-		"hypot":  mathFn1("hypot", math.Abs),
+		"hypot": FuncVal(&Function{Name: "hypot", Native: func(args []*Value, this *Value) (*Value, error) {
+			if len(args) < 2 {
+				return NumberVal(math.NaN()), nil
+			}
+			return NumberVal(math.Hypot(args[0].ToNumber(), args[1].ToNumber())), nil
+		}}),
 		"max": FuncVal(&Function{Name: "max", Native: func(args []*Value, this *Value) (*Value, error) {
 			if len(args) == 0 {
 				return NumberVal(math.Inf(-1)), nil

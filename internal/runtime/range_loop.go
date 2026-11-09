@@ -63,14 +63,24 @@ func (interp *Interpreter) rangeParams(node *ast.Node, env *Environment) (start,
 	return start, step, int(c), nil
 }
 
-func (interp *Interpreter) runRangeJIT(node *ast.Node, env *Environment, start, step float64, done, remaining int) (bool, bool, error) {
-	return interp.runJITSetup(node, env, int64(remaining), func(program *jit.Program, ctx *jit.Context) {
+func (interp *Interpreter) runRangeJIT(node *ast.Node, env *Environment, start, step float64, done, remaining int) (bool, bool, int, error) {
+	processed := 0
+	handled, deopt, err := interp.runJITSetupWithHook(node, env, int64(remaining), func(program *jit.Program, ctx *jit.Context) {
 		if program.RangeRoot {
 			ctx.Slots[program.RangeStart] = start
 			ctx.Slots[program.RangeStep] = step
 			ctx.Slots[program.RangeIndex] = float64(done)
 		}
+	}, func(program *jit.Program, ctx *jit.Context) {
+		if ctx.Status != jit.StatusTierUp || !program.RangeRoot || len(ctx.Counters) == 0 {
+			return
+		}
+		completed := int64(remaining) - ctx.Counters[0]
+		if completed > 0 && completed <= int64(remaining) {
+			processed = int(completed)
+		}
 	})
+	return handled, deopt, processed, err
 }
 
 func (interp *Interpreter) execRangeLoop(node *ast.Node, env *Environment) (*Value, error) {
@@ -86,7 +96,7 @@ func (interp *Interpreter) execRangeLoop(node *ast.Node, env *Environment) (*Val
 	jitDisabled := false
 	for k := 0; k < count; k++ {
 		if !jitDisabled {
-			handled, deopt, err := interp.runRangeJIT(node, env, start, step, k, count-k)
+			handled, deopt, processed, err := interp.runRangeJIT(node, env, start, step, k, count-k)
 			if err != nil {
 				return nil, err
 			}
@@ -95,6 +105,9 @@ func (interp *Interpreter) execRangeLoop(node *ast.Node, env *Environment) (*Val
 			}
 			if deopt {
 				jitDisabled = true
+			} else if processed > 0 {
+				k += processed - 1
+				continue
 			}
 		}
 		iterEnv := NewResolvedEnvironment(env, resolver.SlotCount(node.ScopeInfo), resolver.SlotNames(node.ScopeInfo))

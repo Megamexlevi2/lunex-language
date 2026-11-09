@@ -8,14 +8,63 @@ import (
 )
 
 type Environment struct {
-	mu        sync.RWMutex
-	vars      map[string]*Value
-	consts    map[string]bool
-	parent    *Environment
-	escaped   int32
-	slots     []*Value
-	slotNames []string
-	slotIndex map[string]int
+	mu         sync.RWMutex
+	vars       map[string]*Value
+	consts     map[string]bool
+	parent     *Environment
+	escaped    int32
+	slots      []*Value
+	slotNames  []string
+	slotIndex  map[string]int
+	slotConsts []bool
+}
+
+type environmentLayoutKey struct {
+	first *string
+	count int
+}
+
+type environmentLayout struct {
+	names []string
+	index map[string]int
+}
+
+var environmentLayouts = struct {
+	sync.RWMutex
+	items map[environmentLayoutKey]*environmentLayout
+}{items: make(map[environmentLayoutKey]*environmentLayout)}
+
+func environmentLayoutFor(names []string, count int) *environmentLayout {
+	if count > len(names) {
+		count = len(names)
+	}
+	if count <= 0 {
+		return &environmentLayout{index: map[string]int{}}
+	}
+	key := environmentLayoutKey{first: &names[0], count: count}
+	environmentLayouts.RLock()
+	layout := environmentLayouts.items[key]
+	environmentLayouts.RUnlock()
+	if layout != nil {
+		return layout
+	}
+	layout = &environmentLayout{names: names[:count], index: make(map[string]int, count)}
+	for slot, name := range layout.names {
+		if name != "" {
+			layout.index[name] = slot
+		}
+	}
+	environmentLayouts.Lock()
+	if existing := environmentLayouts.items[key]; existing != nil {
+		layout = existing
+	} else {
+		if len(environmentLayouts.items) >= 4096 {
+			environmentLayouts.items = make(map[environmentLayoutKey]*environmentLayout)
+		}
+		environmentLayouts.items[key] = layout
+	}
+	environmentLayouts.Unlock()
+	return layout
 }
 
 var envPool = sync.Pool{
@@ -37,9 +86,10 @@ func NewEnvironment(parent *Environment) *Environment {
 		delete(e.consts, k)
 	}
 	e.parent = parent
-	e.slots = nil
+	e.slots = e.slots[:0]
 	e.slotNames = nil
 	e.slotIndex = nil
+	e.slotConsts = e.slotConsts[:0]
 	atomic.StoreInt32(&e.escaped, 0)
 	return e
 }
@@ -47,20 +97,23 @@ func NewEnvironment(parent *Environment) *Environment {
 func NewResolvedEnvironment(parent *Environment, slotCount int, names ...[]string) *Environment {
 	e := NewEnvironment(parent)
 	if slotCount > 0 {
-		e.slots = make([]*Value, slotCount)
+		if cap(e.slots) < slotCount {
+			e.slots = make([]*Value, slotCount)
+		} else {
+			e.slots = e.slots[:slotCount]
+			clear(e.slots)
+		}
+		if cap(e.slotConsts) < slotCount {
+			e.slotConsts = make([]bool, slotCount)
+		} else {
+			e.slotConsts = e.slotConsts[:slotCount]
+			clear(e.slotConsts)
+		}
 	}
-	if len(names) > 0 {
-		count := len(names[0])
-		if count > slotCount {
-			count = slotCount
-		}
-		e.slotNames = append([]string(nil), names[0][:count]...)
-		e.slotIndex = make(map[string]int, count)
-		for i, name := range e.slotNames {
-			if name != "" {
-				e.slotIndex[name] = i
-			}
-		}
+	if len(names) > 0 && slotCount > 0 {
+		layout := environmentLayoutFor(names[0], slotCount)
+		e.slotNames = layout.names
+		e.slotIndex = layout.index
 	}
 	return e
 }
@@ -79,9 +132,12 @@ func ReleaseEnvironment(e *Environment) {
 		delete(e.consts, k)
 	}
 	e.parent = nil
-	e.slots = nil
+	clear(e.slots)
+	e.slots = e.slots[:0]
 	e.slotNames = nil
 	e.slotIndex = nil
+	clear(e.slotConsts)
+	e.slotConsts = e.slotConsts[:0]
 	envPool.Put(e)
 }
 
@@ -106,6 +162,9 @@ func (e *Environment) Define(name string, val *Value, isConst bool) {
 		}
 		if isConst {
 			e.consts[name] = true
+			if slot, ok := e.slotIndex[name]; ok && slot >= 0 && slot < len(e.slotConsts) {
+				e.slotConsts[slot] = true
+			}
 		}
 		return
 	}
@@ -116,6 +175,9 @@ func (e *Environment) Define(name string, val *Value, isConst bool) {
 	}
 	if isConst {
 		e.consts[name] = true
+		if slot, ok := e.slotIndex[name]; ok && slot >= 0 && slot < len(e.slotConsts) {
+			e.slotConsts[slot] = true
+		}
 	}
 	e.mu.Unlock()
 }
@@ -274,10 +336,10 @@ func (e *Environment) AllNames() []string {
 
 func (e *Environment) GetSlotAddr(hops, slot int) *Value {
 	cur := e
-	for i := 0; i < hops; i++ {
+	for i := 0; i < hops && cur != nil; i++ {
 		cur = cur.parent
 	}
-	if slot < 0 || slot >= len(cur.slots) {
+	if cur == nil || slot < 0 || slot >= len(cur.slots) {
 		return Undefined
 	}
 	if v := cur.slots[slot]; v != nil {
@@ -288,24 +350,38 @@ func (e *Environment) GetSlotAddr(hops, slot int) *Value {
 
 func (e *Environment) DefineSlot(hops, slot int, name string, val *Value, isConst bool) {
 	cur := e
-	for i := 0; i < hops; i++ {
+	for i := 0; i < hops && cur != nil; i++ {
 		cur = cur.parent
 	}
-	if slot >= 0 && slot < len(cur.slots) {
+	if cur == nil {
+		return
+	}
+	if slot >= 0 && slot < len(cur.slots) && (slot >= len(cur.slotNames) || cur.slotNames[slot] == name) {
 		cur.slots[slot] = val
+		if slot < len(cur.slotConsts) && isConst {
+			cur.slotConsts[slot] = true
+		}
 	}
 	cur.Define(name, val, isConst)
 }
 
 func (e *Environment) SetSlot(hops, slot int, name string, val *Value) error {
 	cur := e
-	for i := 0; i < hops; i++ {
+	for i := 0; i < hops && cur != nil; i++ {
 		cur = cur.parent
 	}
-	if cur.isConstLocal(name) {
+	if cur == nil {
+		return errfmt.ReferenceError(name, "", 0, 0, nil)
+	}
+	validSlot := slot >= 0 && slot < len(cur.slots) && (slot >= len(cur.slotNames) || cur.slotNames[slot] == name)
+	if validSlot && slot < len(cur.slotConsts) {
+		if cur.slotConsts[slot] {
+			return errfmt.ConstReassignError(name, "", 0, 0, nil)
+		}
+	} else if cur.isConstLocal(name) {
 		return errfmt.ConstReassignError(name, "", 0, 0, nil)
 	}
-	if slot >= 0 && slot < len(cur.slots) {
+	if validSlot {
 		cur.slots[slot] = val
 	}
 	cur.SetLocal(name, val)

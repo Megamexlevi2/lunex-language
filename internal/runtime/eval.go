@@ -14,10 +14,7 @@ func (interp *Interpreter) evalExpr(node *ast.Node, env *Environment) (*Value, e
 	if node == nil {
 		return Undefined, nil
 	}
-	if node.Line > 0 {
-		interp.currentLine = node.Line
-		interp.currentCol = node.Col
-	}
+	interp.updateNodeLocation(node)
 	switch node.Type {
 	case ast.NumberLit:
 		if cached, ok := interp.numCache.Load(node); ok {
@@ -170,7 +167,12 @@ func (interp *Interpreter) evalMember(node *ast.Node, env *Environment) (*Value,
 		}()+" != null { ... }")
 		return nil, e
 	}
-	return obj.Get(key), nil
+	if value, ok := interp.cachedMember(node, obj, key); ok {
+		return value, nil
+	}
+	value := obj.Get(key)
+	interp.rememberMember(node, obj, key)
+	return value, nil
 }
 
 func (interp *Interpreter) evalBinary(node *ast.Node, env *Environment) (*Value, error) {
@@ -214,6 +216,7 @@ func (interp *Interpreter) evalBinary(node *ast.Node, env *Environment) (*Value,
 	if err != nil {
 		return nil, err
 	}
+	interp.recordBinaryTypeFeedback(node, left, right)
 
 	switch op {
 	case "+":
@@ -404,8 +407,7 @@ func (interp *Interpreter) evalBinary(node *ast.Node, env *Environment) (*Value,
 			}
 			return False, nil
 		case TypeInstance:
-			_, ok := right.InstVal.Fields[key]
-			return BoolVal(ok), nil
+			return BoolVal(right.InstVal.Has(key)), nil
 		}
 		return False, nil
 	}
@@ -465,6 +467,7 @@ func (interp *Interpreter) evalAssign(node *ast.Node, env *Environment) (*Value,
 		if err != nil {
 			return nil, err
 		}
+		interp.recordBinaryTypeFeedback(node, left, right)
 		op := node.Op[:len(node.Op)-1]
 		right, err = interp.evalBinaryValues(left, right, op)
 		if err != nil {

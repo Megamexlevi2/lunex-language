@@ -1,6 +1,198 @@
 
 ---
 
+# Lunex changelog — 0.9.5 → 0.9.6
+
+This one is a mix of a syntax change I'd been putting off, a lot of tooling, and a big rework of the JIT. The syntax change is string interpolation: it's `!{expr}` now and it works in every kind of string. Around that I added a real formatter (`lunex fmt`), rebuilt `lunex debug` into a proper profiler/diagnostics tool, made the JIT compile in the background and tier up in the middle of hot loops, sped up the interpreter's object/instance handling, taught `std.db` to open databases at any path, and made the WebAssembly build actually usable (virtual filesystem, project files for `@fimport`, Web Worker support). I also fixed a handful of real bugs, including `Math.hypot` returning the wrong number.
+
+## String interpolation is `!{expr}` now (breaking)
+
+```lx
+val name = "Lunex"
+val age = 30
+
+io.log("Hello, !{name}! You are !{age} years old.")
+io.log('Hello, !{name}!')
+io.log(`Hello, !{name}!`)
+```
+
+Before, only backtick strings interpolated, and they used `${expr}`. Now any string literal — `"..."`, `'...'` or `` `...` `` — interpolates with `!{expr}`, and backticks are just another way to quote a string. A string with no `!{` in it is a plain string no matter which quote it uses.
+
+`${expr}` no longer does anything. It stays as literal text. If you have 0.9.5 code like `` `Hello, ${name}` ``, it has to become `` `Hello, !{name}` ``.
+
+A few details:
+
+- The lexer now scans the inside of `!{ ... }` properly. Quotes inside the expression are tracked, so a `}` inside a string inside the interpolation doesn't close it early, and nested `{}` are balanced.
+- A quoted string that contains `!{...}` is tokenized as a template, the same as a backtick string. A quoted string without it stays a plain string.
+- To get a literal `!{` in a normal quoted string, escape the bang: `"price: \!{10}"`.
+- If the expression inside `!{...}` fails to evaluate, the placeholder is replaced with `!{error}` (it used to be `${error}`).
+- `std.utils.template` still supports both `{{key}}` and `${key}` placeholders. That one is a plain string replace and has nothing to do with the language syntax, so I left it alone.
+
+## Lexer fixes
+
+- **Block comments close with `*/` now.** Before this, a `/* ... */` comment was actually terminated by the next `/*`, which is why the docs example looked broken. It ends at `*/` like you'd expect, and the language reference is fixed to match.
+- **An unterminated block comment is an error** (`unterminated block comment at line:col`) instead of silently eating the rest of the file.
+- **Unknown characters are an error** (`unexpected character ... at line:col`). The lexer used to skip anything it didn't recognize without telling you.
+- Line comments (`/!`) now handle `\r\n` line endings correctly.
+- Tokens now carry their raw source text, and there's a new `COMMENT` token plus `TokenizeWithComments` for tools that need comments. The normal path still throws comments away, so nothing changes for the parser.
+
+## `lunex fmt` — a real formatter
+
+```bash
+lunex fmt main.lx            # format in place (default)
+lunex fmt main.lx --write    # same thing, explicit
+lunex fmt main.lx --check    # exit 1 if it would change, don't touch the file
+lunex fmt main.lx --stdout   # print the result, don't touch the file
+lunex format main.lx         # alias
+```
+
+The old formatter rebuilt the code from the AST, and the AST doesn't carry comments, with a crude brace-counting fallback behind it. The new one is token-based and AST-guided: it uses the lexer for layout and the parser's source positions to tell statements, blocks, and object/array literals apart. It normalizes indentation, operator spacing, comma spacing, control-flow blocks, and wraps long arrays/objects, while keeping every token's original spelling, string and template literals, comments (both `/!` and `/* */`) and your line endings (CRLF stays CRLF).
+
+The part I care most about is that it never writes something it hasn't verified. Before anything is written, the candidate is checked against the original: same tokens and values, same comment contents, same AST structure (ignoring positions), and it has to parse again. If the syntax-aware output fails that check, it tries the AST output, then a conservative whitespace-only pass. If nothing verifies, it leaves your file alone and exits with an error. A file that doesn't parse at all gets the whitespace-only treatment.
+
+Other things worth knowing:
+
+- Writes go through a temp file and a rename, keep the file's permissions, and follow symlinks.
+- Exit codes: `0` ok, `1` not formatted (`--check`) or refused/unverifiable, `2` usage error. `--check` and `--stdout` can't be combined.
+- `compiler.Format` (what the rest of the toolchain calls) now goes through the same formatter.
+- Tiny fix in the old AST printer: template literals are printed from their parts instead of an empty value.
+- There's a `lunex help fmt` page, and `format` works as a help topic too.
+
+## `lunex debug` was rebuilt
+
+`lunex debug` used to just turn on verbose output and run your file. Now it's a proper diagnostics tool that works on `.lx` files and `.nax` archives:
+
+```bash
+lunex debug app.lx
+lunex debug app.lx --report debug-report.json
+lunex debug app.lx --cpu-profile cpu.pprof --mem-profile heap.pprof
+lunex debug app.lx --alloc-profile allocs.pprof --block-profile block.pprof --mutex-profile mutex.pprof
+lunex debug app.lx --trace runtime.trace --goroutines goroutines.txt
+lunex debug server.lx --pprof 127.0.0.1:6060
+lunex debug app.lx --preserve-jit
+lunex debug app.lx --report r.json -- arg1 arg2
+```
+
+What you get:
+
+- **Lunex call stacks with source locations.** Runtime errors now show a stack trace of Lunex functions (file, line, column), and the trace lists the most recent call first, capped at 12 frames with a "N more frames omitted" line. Tasks inherit the caller's stack. Go panics print the Go stack and the Lunex stack together.
+- **Sampled function profile.** A table of calls and estimated time per function, sorted by time. The timings are sampled and weighted (the first 8 calls of a function are always timed, then roughly one in 32, scaled back up), so they're good for finding hot functions but they're estimates, not exact per-call numbers. `--profile-limit <n>` (1–1000, default 20) and `--no-profile` control it.
+- **Go runtime artifacts:** `--cpu-profile`, `--mem-profile` (alias `--heap-profile`), `--alloc-profile`, `--block-profile` (about 1 ms sampling), `--mutex-profile`, `--trace`, and `--goroutines`. Everything except the trace is something you can open with `go tool pprof`.
+- **`--report <file>`**: a JSON report (`schema_version: 1`) with the tool version, Go version, OS/arch, PID and GOMAXPROCS; the target path, kind (source, NAX archive, or compiled object), size, line count and SHA-256; the execution status (`ok`, `compile_failed`, `runtime_failed`, `panic`, `program_exit`), failed phase, exit code and compile/run/total timings; memory and GC snapshots; the function profile; the error details; and the Lunex and Go stacks. It's written even when compilation fails.
+- **`--pprof <host:port>`** serves live diagnostics while the program runs: `/debug/pprof/…`, `/debug/lunex/functions` and `/debug/lunex/runtime`. It only accepts `localhost` and loopback addresses, and refuses anything public. Port-forward if you need to look at a remote process.
+- **JIT is bypassed by default in debug mode** so stacks and source locations stay accurate. `--preserve-jit` keeps the normal JIT path when you're chasing a JIT-only problem or profiling something production-like; frames may be missing or less precise in that mode.
+- `--no-color` (and `NO_COLOR` / `TERM=dumb`) turn colors off in both debug output and error output. `--` ends debugger options and forwards the rest to your program.
+- The output is calmer and more structured: sections, aligned `label  detail` rows, and a resource summary (heap, GC runs, goroutines) at the end. `LUNEX_DEBUG`, `NTL_DEBUG` and `DEBUG` still turn on debug output for any command.
+- `lunex debug` with no file now prints its help and exits with status `2` (it used to print one usage line and exit `1`). Bad options also exit `2`. `lunex help debug` has the full option list.
+
+## Exit status from `std.testing`
+
+If `testing.run()` reports a failed run, the process now exits with status `1`. The script isn't interrupted: `run()` still returns the structured result and the rest of your code (cleanup, printing a summary) still executes, and the exit status is applied once execution finishes. It works for `lunex run`, `lunex -e`, packed `.nax` programs and `lunex debug`, so `lunex run tests/main.lx` can finally fail a CI job. The exit code is clamped to 1–255 and the first requested non-zero code wins.
+
+## JIT rework
+
+This is where most of the engine work went. The goal was to stop the JIT from stalling the interpreter and to let it keep going instead of throwing work away. Nothing here changes what your code returns; it changes what gets compiled, when, and how much of a run stays native.
+
+**Compilation happens in the background.** When a loop or function gets hot, compilation is queued to a small worker pool (up to 4 workers, 2 on Android, capped by `GOMAXPROCS`) and the interpreter keeps running the code while it waits. The result is swapped in when it's ready. If the queue (64 deep) is full, it just tries again later. A panic in a compile worker is caught and reported instead of taking the process down.
+
+**Tier-up in the middle of a hot loop.** Tier 1 loops count iterations as they go. After 2048 iterations they hand control back, the loop's state is committed, and the tier 2 version is compiled. A long-running loop no longer has to finish (or be re-entered) before it can get the faster code. Counted loops and range loops account for the iterations already done, so nothing runs twice.
+
+**Side exits that resume instead of restarting.** Native code used to bail out ("deopt") when it hit something it couldn't finish, for example a modulo on huge operands like `1e308 % 2`, and the interpreter re-ran the work from scratch. Now the machine code records exactly where it stopped (bytecode position and stack depth) and a resume step continues from that point. That also covers self-recursive functions: a side exit deep in a recursive call resumes at the call site. The compile-time self-check now exercises this path too, and it compares hot-loop counts as well as results.
+
+**Type feedback and value specialization.** The interpreter records operand types on arithmetic and comparison nodes. Tier 2 code is only produced when the numeric feedback is stable (at least 95% numeric samples). Variables that stay constant across a loop's observed iterations get baked into the compiled code as constants, with a guard. If a guard stops matching, the loop falls back to a generic tier 1 version instead of running wrong code.
+
+**Inlining into loops.** Small single-expression functions called from a hot loop can be inlined, as long as they're not recursive and don't use defaults, rest or destructured parameters. The inlined call carries an identity guard on the function, so if you reassign the function the guard fails and you fall back safely.
+
+**Other code generation changes:**
+
+- Tier 2 unrolls counted and range loops 4×, and keeps the remaining count and start index correct.
+- Tier 2 keeps hot local slots in registers, including across self-recursive calls.
+- `Math.sqrt` compiles to a single hardware square-root instruction on amd64 and arm64 (previously a libm call), next to `abs`.
+- The program close/run path is guarded, so a program being replaced by a faster tier can't be closed under a run that's still using it.
+
+**Math on more platforms.** Native `Math` calls that go through the system math library now work on **Windows** too, using `ucrtbase.dll` (falling back to `msvcrt.dll`). In 0.9.5 I said those calls stayed on the interpreter on Windows; that's no longer true. FreeBSD is also recognized now (`libm.so.5` / `libm.so` / `libc.so.7`). Everything still goes through `purego`, so there's still no CGo and no C compiler.
+
+**`Math.hypot` fix.** `Math.hypot(a, b)` was wired to `abs`, so both the interpreter and the JIT returned the absolute value of the first argument (`Math.hypot(3, 4)` gave `3`). It's now a real two-argument `hypot` in the interpreter and a native op in the JIT. This is a behavior change, but a correct one.
+
+**Diagnostics and `lunex runtimes`.** `lunex runtimes` now gives a real report: host OS/arch, whether the native JIT is available / enabled / disabled / unavailable (and why), the tiers, the hotness threshold, whether native verification and tracing are on, a note that `.nax` archives and cached objects are serialized AST that run through the same interpreter (not a separate VM), and how to control it. `--jit` / `--no-jit` and the `LUNEX_NATIVE`, `LUNEX_NATIVE_HOT`, `LUNEX_NATIVE_VERIFY`, `LUNEX_NATIVE_TRACE` variables work as before. `LUNEX_NATIVE_HOT` now describes the threshold for both loops and functions before background compilation. Tasks and `parallel.map` skip the JIT while `lunex debug` is running without `--preserve-jit`.
+
+## Interpreter performance work
+
+None of this is meant to change behavior, but it all touches hot paths:
+
+- **Object and instance shapes.** Plain objects with more than one property are promoted to an interned "shape" (sorted property names with values in slots) after a few property reads, and class/struct instances now store their fields in slots described by a shape built from the class (and its parents). Deleting a property drops an object back to the plain map representation.
+- **Member access caches.** Each `a.b` site remembers the shape and slot it last saw and skips the lookup when the shape matches.
+- **Smaller values.** The rarely used parts of a value (function, class, instance, regex, error, task) moved behind a pointer, so every number, string and boolean is lighter.
+- **Cheaper scopes.** Slot layouts for scopes are shared instead of rebuilt each time a scope is entered, scope objects reuse their slices, and `val` constness is tracked per slot.
+- **Instance lookup** now walks the class chain (and prototype) directly. `in`, `keys`, object spread, rest destructuring and JSON output all go through the new field accessors so slot-based instances behave exactly like before.
+- **Adaptive garbage collection.** If you haven't set `GOGC`, Lunex still starts at 50, then every 2 seconds adjusts the GC percentage between 10 and 70 based on how close the heap is to the memory limit (`GOMEMLIMIT`, default 200 MiB; on Android it uses the tuned limit). Setting `GOGC` yourself disables this, and `LUNEX_GC_ADAPTIVE=0` turns it off explicitly.
+
+## Better runtime errors
+
+- Calls now update the current source location, so errors raised inside calls point at the right line and column.
+- Errors in packed programs show the source snippet again: `.nax` archives and compiled objects that carry source text (the default for `lunex pack`) now pass it to the runtime, where before the source lines were blank.
+- The "calling X resulted in undefined" hint no longer tells you to add a `return` statement (Lunex doesn't have one); it now says to end the function with a value expression, and the example matches.
+- Running a `.nax` archive through a shared compiler (what `lunex debug` does) now restores the previous module loaders when the run finishes, instead of leaving the archive's loaders installed.
+
+## `std.db`: open a database anywhere
+
+```lx
+val db = @import("std.db")
+
+val a = db.open()                         // .lunex/data/default.db
+val b = db.open("app")                    // .lunex/data/app.db
+val c = db.open("./data/app.db")          // exactly that file, parent folders created
+val d = db.open("./data", "app")          // ./data/app.db
+val e = db.open("./data/")                // ./data/default.db
+
+db.drop("./data", "app")                  // deletes ./data/app.db and its SQLite sidecar files
+```
+
+- A plain name (`"app"`) keeps working the way it always did.
+- Anything that looks like a path (an absolute path, something with `/` or `\`, or a name starting with `.`) is used as a path, relative to the current working directory. Missing parent folders are created. A path with no extension gets `.db`, and a path ending in `/` (or an existing directory) uses `default.db` inside it.
+- The two-argument form `db.open(dir, name)` puts `name` (with `.db` added if it has no extension) inside `dir`. The name has to be a file name.
+- `db.create` and `db.connect` behave like `db.open`. `db.drop(path)` and `db.drop(dir, name)` use the same rules, so use the same spelling you opened it with.
+- Databases are now tracked by their resolved file path, so opening the same file two different ways gives you the same handle. `database.path` tells you which file was opened, and `database.name` is the file name without the extension for path-style opens.
+
+One behavior change to watch for: before, `db.open("./data/app")` quietly threw away the folder part and used `.lunex/data/app.db`. It now really uses `./data/app.db`. If you relied on that, switch to a plain name.
+
+## WebAssembly build
+
+- **`@fimport` works with your project files.** The browser loader was already fetching your imports in 0.9.5, but the Go side ignored them. `Lunex.run(source, project)` now actually reads `{ filename, files }` and resolves `@fimport("./x.lx")` / `.nax` from those files (paths are normalized, so `./`, `\` and leading `/` all work). `filename` also becomes the name used in error messages instead of `<browser>`.
+- **`Lunex.ready()`** returns a promise that resolves when the virtual filesystem has finished loading its saved state. The loader awaits it before exposing `run`, `runFile` and `runWithImports`.
+- **`std.fs` is a virtual filesystem in the browser and WASI builds.** It's an in-memory tree with the usual `std.fs` surface (`readFile`, `writeFile`, `appendFile`, `readDir`, `list`, `mkdir`, `ensureDir`, `rename`, `copy`, `moveFile`, `delete`, `deleteAll`, `rmdir`, `stat`, `exists`, `isFile`, `isDir`, `size`, `glob`, `readJSON`/`writeJSON`, `readCSV`/`writeCSV`, `readLines`, `tempDir`/`tempFile`, and the path helpers). In the browser it's saved to IndexedDB (database `lunex_fs`), so files survive a reload; where IndexedDB isn't there, it still works in memory. In the WASI build it's in memory only. The native `std.fs` is only built for non-WASM targets now, which also means the WASI build no longer reaches the host's directories through `std.fs`.
+- **The loader works in Web Workers.** It no longer requires `document`: it loads `wasm_exec.js` with a script tag in a page or `importScripts` in a worker, and uses `self.location.href` as the default base URL. It only throws now if it can do neither.
+- The `std.db` and `std.ffi` exclusions and the other "does not exist" cases from 0.9.4 are unchanged.
+
+## Docs and repo cleanup
+
+- **Docs:** the README examples were rewritten to be complete, runnable programs (wrapped in `fn main()`, with the imports they need), and `hello.lx` is run as `./lunex run hello.lx`. The README, `docs/cli.md` and `lunex help` document `lunex fmt`, the new `lunex debug`, and the new `lunex runtimes`. `docs/cli.md` has a new "Runtime debugger" section, "Global flags" and the FFI note moved to the end of the file, and the environment table now lists `LUNEX_GC_ADAPTIVE`, `LUNEX_NATIVE_VERIFY` and the updated `GOGC`/`GOMEMLIMIT`/`LUNEX_NATIVE_HOT` descriptions. The language reference has a new "String interpolation" section with a migration note, the corrected block-comment example, and the `!{}` template example. `docs/stdlib.md` has the new `std.db` open/drop tables and a note about `std.testing` exit status. The language reference and stdlib headers say `0.9.6-beta`.
+- **`CMakeLists.txt` and `cmake/` are actually gone.** I said in 0.9.5 that they were removed, but they were still sitting in the 0.9.5 tree. They're really deleted now (the Windows build is `build.ps1`). I also deleted a stray root `test.lx` benchmark scratch file.
+- **Version:** `internal/app/version.json` is `0.9.6`, build date `2026-10-23`. The minimum Go version is still 1.25.5.
+
+## Smaller stuff
+
+- **`std.image` always releases its lock.** `resize`, `flipH`, `flipV`, `gray`, `invert`, `brightness`, `contrast`, `saturation`, `paste`, `blur` and `sharpen` used to unlock the image by hand after doing their work, so if the underlying image operation panicked, the image stayed locked and the next call on it would hang. They now unlock with `defer`, the same way `pixel`, `setPixel`, `crop` and `rotate` already did. No inputs, outputs or limits changed.
+
+## Breaking changes, summarized
+
+If you're upgrading from 0.9.5, here's what will actually bite you:
+
+1. `${expr}` doesn't interpolate anymore. Use `!{expr}`, and note that it now works in `"..."` and `'...'` too. That also means any existing string that happens to contain a literal `!{` will now be treated as an interpolation; escape it as `\!{`. Update your own `.lx` files and any libraries you depend on.
+2. Block comments end at `*/`, not `/*`, and an unterminated block comment is an error.
+3. Characters the lexer doesn't recognize are now an error instead of being skipped.
+4. `std.db`: a path-looking name now means a real path. `db.open("./data/app")` used to land in `.lunex/data/app.db`, and now it creates `./data/app.db`.
+5. `std.fs` in the browser and WASI builds is a virtual filesystem. WASI programs no longer see the host's directories through `std.fs`.
+6. `testing.run()` with a failing result makes the process exit with status `1`. A CI step that used to pass with a red test run will fail now (which is the point).
+7. `Math.hypot(a, b)` returns the real hypotenuse instead of `abs(a)`.
+8. `lunex fmt` formats in place by default (use `--check` or `--stdout` if you don't want that), and `lunex debug` usage errors exit with `2`.
+9. Stack traces print the most recent call first.
+
+Same as always: if something breaks that isn't listed here, open an issue. It's probably a doc gap and not on purpose.
+
+
+---
+
 # Lunex changelog — 0.9.4 → 0.9.5
 
 The big thing here is that I ripped out `spawn`/`channel` and replaced them with a task-based concurrency model. That touched the lexer, parser, checker, resolver, formatter and runtime, so it's the center of gravity for this release. Around that I added two sizable new modules (`std.net` and `std.encoding`), a real Language Server, native math in the JIT, a Windows build script, and a checker bug that's been bugging me for a while.

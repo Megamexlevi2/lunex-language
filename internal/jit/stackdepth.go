@@ -25,9 +25,14 @@ func bytecodeStackDepths(p *Program) ([]int, error) {
 			d++
 		case OpStoreSlot, OpPop, OpSetRepeatCounter, OpReturnValue:
 			d--
-		case OpStoreSlotKeep, OpSwap, OpNeg, OpJump, OpTick, OpRepeatCheck, OpRepeatDecrement, OpBreak, OpReturn:
+		case OpStoreSlotKeep, OpSwap, OpNeg, OpJump, OpTick, OpHotPoll, OpRepeatCheck, OpRepeatDecrement, OpBreak, OpReturn:
 		case OpAdd, OpSub, OpMul, OpDiv, OpMod, OpCompare:
 			d--
+		case OpCallSelf:
+			if in.A < 0 || in.A > depth {
+				return 0, fmt.Errorf("invalid self-call stack depth %d with %d arguments", depth, in.A)
+			}
+			d += 1 - in.A
 		case OpMath:
 			arity := mathFunctionArity(in.A)
 			if arity == 2 {

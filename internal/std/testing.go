@@ -1184,10 +1184,28 @@ val __module__ = {
 
 func TestingModule(interp interface {
 	ExecAsModule(source, filename string) (*runtime.Value, error)
+	CallFunctionValue(fnVal *runtime.Value, args []*runtime.Value) (*runtime.Value, error)
 }) *runtime.Value {
 	mod, err := interp.ExecAsModule(testingSource, "testing")
 	if err != nil {
 		panic(err)
 	}
+	run := mod.Get("run")
+	mod.Set("run", runtime.FuncVal(&runtime.Function{
+		Name: "run",
+		Native: func(args []*runtime.Value, this *runtime.Value) (*runtime.Value, error) {
+			result, runErr := interp.CallFunctionValue(run, args)
+			if runErr != nil {
+				return nil, runErr
+			}
+			if result != nil && result.Tag == runtime.TypeObject {
+				ok := result.Get("ok")
+				if ok != nil && ok.Tag == runtime.TypeBool && !ok.BoolVal {
+					RequestExitCode(1)
+				}
+			}
+			return result, nil
+		},
+	}))
 	return mod
 }

@@ -10,7 +10,7 @@ import (
 const (
 	fastSlotBase          = 0
 	fastStackBase         = 4
-	fastMaxSlots          = 4
+	fastMaxSlots          = 10
 	fastMaxStack          = 2
 	fastBudgetReg         = 8
 	fastUsedReg           = 9
@@ -93,7 +93,13 @@ func (w *x86Writer) movqRegToXmm(dstXmm, srcGpr byte) {
 	w.u8(0xC0 | ((dstXmm & 7) << 3) | (srcGpr & 7))
 }
 
-func fastSlotReg(index int) byte  { return byte(fastSlotBase + index) }
+func fastSlotReg(index int) byte {
+	if index < fastStackBase {
+		return byte(fastSlotBase + index)
+	}
+	return byte(10 + index - fastStackBase)
+}
+
 func fastStackReg(depth int) byte { return byte(fastStackBase + depth) }
 
 func fastEligible(p *Program, refs int) error {
@@ -104,8 +110,11 @@ func fastEligible(p *Program, refs int) error {
 		return fmt.Errorf("fast expression stack exceeds %d values", fastMaxStack)
 	}
 	for i, in := range p.Bytecode {
-		if in.Op == OpMath {
-			return fmt.Errorf("native math calls use the general register backend")
+		if in.Op == OpHotPoll || in.Op == OpMod || in.Op == OpSetRepeatCounter {
+			return fmt.Errorf("instruction %d requires the resumable general backend", in.Op)
+		}
+		if in.Op == OpMath && in.A != MathAbs && in.A != MathSqrt {
+			return fmt.Errorf("native math operation %d uses the general register backend", in.A)
 		}
 		if in.Op != OpMod || i == 0 {
 			continue
@@ -317,6 +326,26 @@ func emitMachineFast(p *Program) ([]byte, error) {
 				return fail(i, fmt.Errorf("invalid fast negation depth"))
 			}
 			w.xorpdMem(sx(d-1), regCtx, ctxConstsOff+8)
+		case OpMath:
+			if d < 1 {
+				return fail(i, fmt.Errorf("invalid fast math depth"))
+			}
+			reg := sx(d - 1)
+			if in.A == MathAbs {
+				w.movqImmReg(0, 0x7fffffffffffffff)
+				w.movqRegToXmm(6, 0)
+				w.sseBinary(0x66, 0x54, reg, 6)
+			} else if in.A == MathSqrt {
+				w.u8(0xF2)
+				if reg >= 8 {
+					w.u8(x86Rex(false, reg >= 8, reg >= 8))
+				}
+				w.u8(0x0F)
+				w.u8(0x51)
+				w.u8(0xC0 | ((reg & 7) << 3) | (reg & 7))
+			} else {
+				return fail(i, fmt.Errorf("unsupported fast math operation %d", in.A))
+			}
 		case OpCompare:
 			if d < 2 {
 				return fail(i, fmt.Errorf("invalid fast compare depth"))

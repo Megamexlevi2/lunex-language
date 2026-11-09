@@ -288,19 +288,26 @@ func (interp *Interpreter) createTask(args []*Value) (*Value, error) {
 }
 
 func (interp *Interpreter) newTaskWorker(fn *Function) *Interpreter {
+	profiler := NewProfiler()
+	if interp.profiler != nil && interp.diagnosticTracing {
+		profiler = interp.profiler
+	}
 	worker := &Interpreter{
-		globals:       NewEnvironment(nil),
-		profiler:      NewProfiler(),
-		modules:       make(map[string]*Value),
-		maxExecSteps:  interp.maxExecSteps,
-		jitLoops:      make(map[*ast.Node]*jitLoopState),
-		jitFunctions:  make(map[*Function]*jitFunctionState),
-		watchers:      make([]*watcher, 0),
-		moduleLoader:  interp.moduleLoader,
-		ntlLoader:     interp.ntlLoader,
-		astLoader:     interp.astLoader,
-		ntlFileLoader: interp.ntlFileLoader,
-		naxLoader:     interp.naxLoader,
+		globals:           NewEnvironment(nil),
+		profiler:          profiler,
+		callStack:         append(interp.callStack[:0:0], interp.callStack...),
+		diagnosticTracing: interp.diagnosticTracing,
+		diagnosticJIT:     interp.diagnosticJIT,
+		modules:           make(map[string]*Value),
+		maxExecSteps:      interp.maxExecSteps,
+		jitLoops:          make(map[*ast.Node]*jitLoopState),
+		jitFunctions:      make(map[*Function]*jitFunctionState),
+		watchers:          make([]*watcher, 0),
+		moduleLoader:      interp.moduleLoader,
+		ntlLoader:         interp.ntlLoader,
+		astLoader:         interp.astLoader,
+		ntlFileLoader:     interp.ntlFileLoader,
+		naxLoader:         interp.naxLoader,
 	}
 	if fn != nil {
 		worker.filename = fn.SourceFile
@@ -491,7 +498,7 @@ func taskProgramUsesExternalSlots(program *jit.Program) bool {
 }
 
 func runNativeTask(interp *Interpreter, program *jit.Program, fn *Function, args []*Value) (*Value, error, bool) {
-	if interp == nil || program == nil || fn == nil || len(args) != len(fn.Params) || len(args) != len(program.ParamSlots) {
+	if interp == nil || (interp.diagnosticTracing && !interp.diagnosticJIT) || program == nil || fn == nil || len(args) != len(fn.Params) || len(args) != len(program.ParamSlots) {
 		return nil, nil, false
 	}
 	body, ok := fn.Body.(*ast.Node)
@@ -554,7 +561,7 @@ func (interp *Interpreter) parallelMap(args []*Value) (*Value, error) {
 		}
 	}
 	var program *jit.Program
-	if allNumbers {
+	if allNumbers && (!interp.diagnosticTracing || interp.diagnosticJIT) {
 		program = interp.compileTaskFunction(fn, []*Value{items[0]})
 	}
 	workerCount := goruntime.GOMAXPROCS(0)

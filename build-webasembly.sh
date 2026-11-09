@@ -22,14 +22,22 @@ build_browser() {
   cat > "$BUILD_DIR/lunex-browser.js" <<'EOF'
 async function loadRuntime() {
   if (typeof globalThis.Go === "function") return
-  if (typeof document === "undefined") throw new Error("wasm_exec.js must be loaded in a browser")
-  await new Promise((resolve, reject) => {
-    const script = document.createElement("script")
-    script.src = new URL("./wasm_exec.js", import.meta.url)
-    script.onload = resolve
-    script.onerror = () => reject(new Error("failed to load wasm_exec.js"))
-    document.head.appendChild(script)
-  })
+  const wasmExecURL = new URL("./wasm_exec.js", import.meta.url)
+  if (typeof document !== "undefined") {
+    await new Promise((resolve, reject) => {
+      const script = document.createElement("script")
+      script.src = wasmExecURL
+      script.onload = resolve
+      script.onerror = () => reject(new Error("failed to load wasm_exec.js"))
+      document.head.appendChild(script)
+    })
+    return
+  }
+  if (typeof importScripts === "function") {
+    importScripts(wasmExecURL.href)
+    return
+  }
+  throw new Error("wasm_exec.js must be loaded in a browser window or a Web Worker")
 }
 
 function fileKey(url) {
@@ -181,14 +189,18 @@ export async function loadLunex(wasmURL = new URL("./lunex-js.wasm", import.meta
   }
 
   const api = globalThis.Lunex
+  if (typeof api.ready === "function") {
+    await api.ready()
+  }
   const runSource = api.run.bind(api)
-  api.runWithImports = async (source, baseURL = document.baseURI) => {
+  const defaultBaseURI = typeof document !== "undefined" ? document.baseURI : self.location.href
+  api.runWithImports = async (source, baseURL = defaultBaseURI) => {
     if (typeof source !== "string") throw new TypeError("source must be a string")
     const project = await collectProject(new URL(baseURL, import.meta.url), source)
     return runSource(project.source, project)
   }
   api.runFile = async url => {
-    const project = await collectProject(new URL(url, document.baseURI))
+    const project = await collectProject(new URL(url, defaultBaseURI))
     return runSource(project.source, project)
   }
   return api

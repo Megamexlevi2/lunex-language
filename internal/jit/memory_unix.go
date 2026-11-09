@@ -8,6 +8,7 @@ import (
 )
 
 func init() {
+	executableMemoryAvailable = true
 	allocateExecutable = unixAllocate
 	protectExecutable = unixProtect
 	releaseExecutable = unixRelease

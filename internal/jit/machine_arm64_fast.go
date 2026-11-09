@@ -50,15 +50,12 @@ func a64FastEligible(p *Program) error {
 	if p.ExpressionStack > a64FastMaxStack {
 		return fmt.Errorf("fast expression stack exceeds %d values", a64FastMaxStack)
 	}
-	for i, in := range p.Bytecode {
-		if in.Op == OpMath {
-			return fmt.Errorf("native math calls use the general register backend")
+	for _, in := range p.Bytecode {
+		if in.Op == OpHotPoll || in.Op == OpMod || in.Op == OpSetRepeatCounter {
+			return fmt.Errorf("instruction %d requires the resumable general backend", in.Op)
 		}
-		if in.Op != OpMod {
-			continue
-		}
-		if _, err := a64FastDivisor(p, i); err != nil {
-			return err
+		if in.Op == OpMath && in.A != MathAbs && in.A != MathSqrt {
+			return fmt.Errorf("native math operation %d uses the general register backend", in.A)
 		}
 	}
 	return nil
@@ -220,6 +217,16 @@ func emitMachineFast(p *Program) ([]byte, error) {
 				return fail(i, fmt.Errorf("invalid negation depth"))
 			}
 			w.u32(fnegD(sx(d-1), sx(d-1)))
+		case OpMath:
+			if d < 1 || (in.A != MathAbs && in.A != MathSqrt) {
+				return fail(i, fmt.Errorf("unsupported fast math operation %d", in.A))
+			}
+			reg := sx(d - 1)
+			if in.A == MathAbs {
+				w.u32(0x1E60C000 | (reg << 5) | reg)
+			} else {
+				w.u32(0x1E61C000 | (reg << 5) | reg)
+			}
 		case OpCompare:
 			if d < 2 {
 				return fail(i, fmt.Errorf("invalid compare depth"))

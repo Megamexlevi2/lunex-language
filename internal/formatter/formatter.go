@@ -409,7 +409,7 @@ func (f *Formatter) expr(n *ast.Node) string {
 		s, _ := n.Value.(string)
 		return fmt.Sprintf("%q", s)
 	case ast.TemplateLit:
-		s, _ := n.Value.(string)
+		s, _ := n.Parts.(string)
 		return "`" + s + "`"
 	case ast.BoolLit:
 		if b, ok := n.Value.(bool); ok {

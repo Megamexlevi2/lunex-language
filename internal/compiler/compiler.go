@@ -185,15 +185,23 @@ func (c *Compiler) RunAST(tree *ast.Node, filename, source string) error {
 }
 
 func (c *Compiler) RunOptimizedAST(tree *ast.Node, filename string) error {
+	return c.RunOptimizedASTWithSource(tree, filename, "")
+}
+
+func (c *Compiler) RunOptimizedASTWithSource(tree *ast.Node, filename, source string) error {
 	c.interp.SetFilename(filename)
-	c.interp.SetSourceLines(nil)
+	var sourceLines []string
+	if source != "" {
+		sourceLines = strings.Split(source, "\n")
+	}
+	c.interp.SetSourceLines(sourceLines)
 	_, execErr := c.interp.ExecTrusted(tree)
 	if execErr != nil {
-		c.printRuntimeError(execErr, filename, "")
+		c.printRuntimeError(execErr, filename, source)
 		return execErr
 	}
 	if mainErr := c.interp.CallMain(); mainErr != nil {
-		c.printRuntimeError(mainErr, filename, "")
+		c.printRuntimeError(mainErr, filename, source)
 		return mainErr
 	}
 	c.interp.ProvideKeepAliveWait()
@@ -271,81 +279,7 @@ func (c *Compiler) Check(source, filename string) error {
 }
 
 func Format(source string) string {
-	tokens, err := lexer.Tokenize(source, "<fmt>")
-	if err == nil {
-		tree, err2 := parser.Parse(tokens, "<fmt>")
-		if err2 == nil {
-
-			formatter.FixCoercions(tree)
-			return formatter.Format(tree)
-		}
-	}
-
-	return formatLegacy(source)
-}
-
-func formatLegacy(source string) string {
-	lines := strings.Split(source, "\n")
-	var out []string
-	indent := 0
-
-	for _, raw := range lines {
-		line := strings.TrimSpace(raw)
-		if line == "" {
-			out = append(out, "")
-			continue
-		}
-
-		opens, closes := countBracesOutsideStrings(line)
-
-		if closes > 0 && (strings.HasPrefix(line, "}") || strings.HasPrefix(line, ")") || strings.HasPrefix(line, "]")) {
-			indent -= closes
-			if indent < 0 {
-				indent = 0
-			}
-		}
-
-		out = append(out, strings.Repeat("  ", indent)+line)
-
-		if opens > closes {
-			indent += opens - closes
-		}
-	}
-	return strings.Join(out, "\n")
-}
-
-func countBracesOutsideStrings(line string) (opens, closes int) {
-	inStr := false
-	var strChar rune
-	runes := []rune(line)
-	for i := 0; i < len(runes); i++ {
-		r := runes[i]
-		if inStr {
-			if r == '\\' {
-				i++
-				continue
-			}
-			if r == strChar {
-				inStr = false
-			}
-			continue
-		}
-		if r == '"' || r == '\'' || r == '`' {
-			inStr = true
-			strChar = r
-			continue
-		}
-		if r == '/' && i+1 < len(runes) && runes[i+1] == '/' {
-			break
-		}
-		switch r {
-		case '{', '(':
-			opens++
-		case '}', ')':
-			closes++
-		}
-	}
-	return opens, closes
+	return formatter.FormatSource(source).Code
 }
 
 func (c *Compiler) registerStdlib() {}

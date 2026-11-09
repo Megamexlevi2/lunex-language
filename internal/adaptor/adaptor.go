@@ -678,6 +678,7 @@ func applyAndroidTuning() {
 				limit = ceiling
 			}
 			debug.SetMemoryLimit(int64(limit))
+			androidMemoryLimitBytes = int64(limit)
 		}
 	}
 
@@ -687,9 +688,14 @@ func applyAndroidTuning() {
 }
 
 var androidTuningApplied = false
+var androidMemoryLimitBytes int64
 
 func AndroidTuningApplied() bool {
 	return androidTuningApplied
+}
+
+func AndroidMemoryLimitBytes() int64 {
+	return androidMemoryLimitBytes
 }
 
 var preferMemCache = false

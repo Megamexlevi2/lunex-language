@@ -67,7 +67,7 @@ fn main() {
 }
 EOF
 
-lunex run hello.lx
+./lunex run hello.lx
 ```
 
 ---
@@ -79,19 +79,44 @@ lunex run hello.lx
 `val` is immutable. `var` is mutable.
 
 ```lx
-val name   = "Lunex"
-val pi     = 3.14159
-val active = true
+val io = @import("std.io")
 
-var counter = 0
-counter = counter + 1
+fn main() {
+  val name = "Lunex"
+  val pi = 3.14159
+  val active = true
+  var counter = 0
+  counter = counter + 1
+
+  io.log("name:", name)
+  io.log("pi:", pi)
+  io.log("active:", active)
+  io.log("counter:", counter)
+}
 ```
 
 Destructuring works on objects and arrays at the top level and inside functions or blocks. Object fields can be renamed, defaults can be supplied, and `...rest` collects remaining fields or array elements:
 
 ```lx
-val { name, role: access, missing = "guest", ...extra } = user
-val [first, second, ...remaining] = items
+val io = @import("std.io")
+
+fn main() {
+  val user = struct {
+    name = "Alice"
+    role = "admin"
+    team = "runtime"
+  }
+  val items = [10, 20, 30, 40]
+  val { name, role: access, missing = "guest", ...extra } = user
+  val [first, second, ...remaining] = items
+
+  io.log("name:", name)
+  io.log("access:", access)
+  io.log("missing:", missing)
+  io.log("extra:", extra)
+  io.log("first:", first, "second:", second)
+  io.log("remaining:", remaining)
+}
 ```
 
 ### Functions
@@ -100,14 +125,18 @@ The last expression in a function body is its return value.
 Lunex has no `return` keyword.
 
 ```lx
+val io = @import("std.io")
+
 fn add(a, b) {
-  a + b          
+  a + b
 }
 
 val square = fn(x) { x * x }
 
-io.log(add(2, 3))    
-io.log(square(5))    
+fn main() {
+  io.log(add(2, 3))
+  io.log(square(5))
+}
 ```
 
 ### Structs and Factory Functions
@@ -116,86 +145,129 @@ Struct values and factory functions are useful for creating lightweight
 objects:
 
 ```lx
+val io = @import("std.io")
+
 fn Animal(name, sound) {
   val self = struct {
-    name  = name
+    name = name
     sound = sound
 
     fn speak() {
       self.name + " says " + self.sound
+      /! or: "!{self.name} says !{self.sound}"
     }
   }
   self
 }
 
-val cat = Animal("Cat", "Meow")
-io.log(cat.speak())
+fn main() {
+  val cat = Animal("Cat", "Meow")
+  io.log(cat.speak())
+}
 ```
 
 ### Control Flow
 
 ```lx
-if n < 0 {
-  "negative"
-} else if n == 0 {
-  "zero"
-} else {
-  "positive"
+val io = @import("std.io")
+
+fn classify(n) {
+  if n < 0 {
+    "negative"
+  } else if n == 0 {
+    "zero"
+  } else {
+    "positive"
+  }
+}
+
+fn main() {
+  io.log(classify(-1))
+  io.log(classify(0))
+  io.log(classify(1))
 }
 ```
 
 `guard` runs its `else` block when the condition is **false**:
 
 ```lx
-guard user != null else {
-  io.err("no user provided")
+val io = @import("std.io")
+
+fn greet(user) {
+  guard user != null else {
+    io.err("no user provided")
+  }
+  io.log("Hello,", user)
 }
 
+fn main() {
+  greet("Alice")
+}
 ```
 
 `unless` runs its block when the condition is **false**:
 
 ```lx
-unless connected {
-  io.warn("not connected — retrying")
+val io = @import("std.io")
+
+fn main() {
+  val connected = false
+  unless connected {
+    io.warn("not connected — retrying")
+  }
 }
 ```
 
 `watch` runs a block whenever a watched variable or member expression changes:
 
 ```lx
-var counter = 0
+val io = @import("std.io")
 
-watch counter {
-  io.log("Counter changed: " + counter)
+fn main() {
+  var counter = 0
+
+  watch counter {
+    io.log("Counter changed: " + str(counter))
+    /! or: io.log("Counter changed: !{counter}")
+  }
+
+  counter = 10
+  counter = 20
 }
-
-counter = 10
-counter = 20
 ```
 
 `match` tests exact values — top-to-bottom, first match wins:
 
 ```lx
-val label = match status {
-  "ok"      => "success"
-  "pending" => "waiting"
-  "fail"    => "error"
-  _         => "unknown"
+val io = @import("std.io")
+
+fn main() {
+  val status = "ok"
+  val label = match status {
+    "ok" => "success"
+    "pending" => "waiting"
+    "fail" => "error"
+    _ => "unknown"
+  }
+  io.log(label)
 }
 ```
 
 ### Loops
 
 ```lx
-var i = 0
-while i < 10 {
-  io.log(i)
-  i = i + 1
-}
+val io = @import("std.io")
 
-each name in ["Alice", "Bob", "Carol"] {
-  io.log("Hello, " + name + "!")
+fn main() {
+  var i = 0
+  while i < 3 {
+    io.log("i:", i)
+    i = i + 1
+  }
+
+  each name in ["Alice", "Bob", "Carol"] {
+    io.log("Hello,", name, "!")
+  }
 }
 ```
 
@@ -204,36 +276,43 @@ each name in ["Alice", "Bob", "Carol"] {
 Arrays and strings have built-in methods — no import needed:
 
 ```lx
-val nums = [3, 1, 4, 1, 5]
+val io = @import("std.io")
 
-nums.sort()                              
-nums.map(fn(x) { x * 2 })              
-nums.filter(fn(x) { x > 2 })           
-nums.reduce(fn(acc, x) { acc + x }, 0) 
-nums.includes(4)                         
-nums.length                              
+fn main() {
+  val nums = [3, 1, 4, 1, 5]
 
-"lunex".toUpperCase()                    
-"  hello  ".trim()                       
-"lunex".startsWith("lun")               
+  io.log("sorted:", nums.sort())
+  io.log("map:", nums.map(fn(x) { x * 2 }))
+  io.log("filter:", nums.filter(fn(x) { x > 2 }))
+  io.log("sum:", nums.reduce(fn(acc, x) { acc + x }, 0))
+  io.log("includes 4:", nums.includes(4))
+  io.log("length:", nums.length)
+
+  io.log("uppercase:", "lunex".toUpperCase())
+  io.log("trim:", "  hello  ".trim())
+  io.log("starts with lun:", "lunex".startsWith("lun"))
+}
 ```
 
 ### Concurrency
 
 ```lx
+val io = @import("std.io")
+
 fn calculate(n) {
   n * n
 }
 
-val task = new.task(calculate, 12)
-val result = task.await()
-io.log(result)
+fn main() {
+  val task = new.task(calculate, 12)
+  io.log(task.await())
 
-val batch = [new.task(calculate, 2), new.task(calculate, 3)]
-io.log(tasks.all(batch))
+  val batch = [new.task(calculate, 2), new.task(calculate, 3)]
+  io.log(tasks.all(batch))
 
-val results = parallel.map(calculate, [1, 2, 3, 4, 5])
-io.log(results)
+  val results = parallel.map(calculate, [1, 2, 3, 4, 5])
+  io.log(results)
+}
 ```
 
 ### Defer
@@ -241,10 +320,16 @@ io.log(results)
 Schedules a block to run when the enclosing function exits:
 
 ```lx
+val io = @import("std.io")
+val fs = @import("std.fs")
+
 fn process(path) {
-  val fs = @import("std.fs")
   defer { io.log("finished:", path) }
   fs.readFile(path)
+}
+
+fn main() {
+  process("./examples/01_hello_world.lx")
 }
 ```
 
@@ -254,8 +339,10 @@ fn process(path) {
 
 ```text
 lunex run <file> [--emit ast|ir]   run a .lx source or .nax archive
+lunex fmt <file.lx> [options]      format and verify Lunex source
+lunex format <file.lx> [options]   alias for fmt
 lunex start                        run the project entry from lunex.toml
-lunex debug <file>                 run with full compile diagnostics and a stack trace on error
+lunex debug <file>                 run with call stacks, runtime profiles, and diagnostics
 lunex -e "<code>"                  run a code snippet directly
 lunex repl                         start the interactive REPL
 lunex pack <file.lx|directory>     compile and bundle a file or directory into .nax (source preserved by default)
@@ -270,13 +357,31 @@ lunex set cache reset              reset the cache directory to default
 lunex cache [clear]                show or clear the on-disk runtime cache
 lunex memcache [clear]             show or clear the in-process memory cache
 lunex platform                     show platform / adapter diagnostics
-lunex runtimes                     show available execution engines
+lunex runtimes                     show the AST interpreter and native JIT capabilities
 lunex bench <file>                 run with timing output
 lunex env                          show global/local module store paths and project status
 lunex link                         link this project's [project.bin] commands globally
 lunex version                      print version
 lunex help                         show this help
 ```
+
+Format source files with the syntax-aware formatter and integrity verifier:
+
+```bash
+lunex fmt main.lx
+lunex fmt main.lx --check
+lunex fmt main.lx --stdout
+lunex format main.lx --write
+```
+
+The default behavior writes verified formatting back to the file. `--check`
+checks formatting without modifying the source and exits with status 1 when
+changes are needed. `--stdout` prints the candidate without changing the file.
+The formatter uses the lexer, parser, and AST to lay out statements, blocks,
+operators, calls, arrays, and objects. It preserves token spellings, string
+literals, comments, and line endings, and validates the formatted source against
+the original AST before writing. When validation fails, Lunex refuses to write
+an unverified candidate. See the [CLI reference](docs/cli.md) for details.
 
 Extra options: `lunex --help-extras`
 
@@ -319,22 +424,36 @@ versions of the same library without conflict. Resolution when you write
 ## Module System
 
 ```lx
-val io     = @import("std.io")
-val http   = @import("std.http")
+val io = @import("std.io")
+val http = @import("std.http")
 val crypto = @import("std.crypto")
+
+fn main() {
+  io.log("Standard library modules loaded")
+}
 ```
 
 Import a local source file or compiled archive:
 
 ```lx
-val lib = @fimport("./src/utils.lx")
-val pkg = @fimport("./dist/math.nax")
+val math = @fimport("./tests/math.lx")
+val io = @import("std.io")
+
+fn main() {
+  io.log("Sum:", math.add(10, 5))
+  io.log("Product:", math.mul(4, 3))
+}
 ```
 
 Import an external library installed by Lunex:
 
 ```lx
 val xml = @import("lune-xml")
+val io = @import("std.io")
+
+fn main() {
+  io.log("XML library loaded")
+}
 ```
 
 ---

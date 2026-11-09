@@ -77,16 +77,33 @@ var helpPages = map[string]helpPage{
 	},
 	"debug": {
 		Name:    "debug",
-		Usage:   "lunex debug <file.lx> [args...]",
-		Summary: "Compile and run a source file with detailed execution diagnostics.",
+		Usage:   "lunex debug <file.lx|file.nax> [options] [-- script-args...]",
+		Summary: "Run a Lunex source file or NAX application with runtime tracing, profiling, and diagnostic reports.",
 		Sections: []helpSection{
-			{Title: "Behavior", Rows: []string{
-				"Enables debug output and keeps the full compile diagnostics visible.",
-				"Runtime failures are reported together with the execution trace available to Lunex.",
+			{Title: "Runtime diagnostics", Rows: []string{
+				"Captures Lunex call stacks with source locations when runtime errors occur.",
+				"Reports sampled function timings, heap usage, garbage collection, and goroutine counts.",
+				"Can export CPU, heap, allocation, block, and mutex profiles, execution traces, and goroutine stacks.",
+				"JSON reports include source hashes, platform details, phase timings, errors, and resource snapshots.",
+			}},
+			{Title: "Options", Rows: []string{
+				"--cpu-profile <file>   Write a CPU profile for go tool pprof.",
+				"--mem-profile <file>   Write an in-use heap profile for go tool pprof.",
+				"--alloc-profile <file> Write cumulative allocation samples.",
+				"--block-profile <file> Write goroutine blocking data.",
+				"--mutex-profile <file> Write mutex contention data.",
+				"--trace <file>         Write a Go runtime execution trace.",
+				"--goroutines <file>    Write all goroutine stacks when execution ends.",
+				"--report <file>        Write a machine-readable JSON report.",
+				"--pprof <host:port>    Serve live diagnostics on loopback only.",
+				"--preserve-jit         Keep the normal JIT execution path.",
+				"--profile-limit <n>    Limit the number of functions shown in the profile.",
+				"--no-profile           Hide the function profile table.",
+				"--no-color             Disable ANSI colors.",
 			}},
 			{Title: "Arguments", Rows: []string{
-				"<file.lx>             Lunex source file to compile and run.",
-				"[args...]             Arguments forwarded to the program.",
+				"<file.lx|file.nax>    Source file or compiled NAX application to run.",
+				"-- script-args...      Arguments forwarded to the Lunex program.",
 			}},
 		},
 	},
@@ -129,6 +146,23 @@ var helpPages = map[string]helpPage{
 				".load <file>          Load and evaluate a .lx file.",
 				".type <expr>          Show the type of an expression.",
 				"Ctrl+D                Leave the REPL with EOF.",
+			}},
+		},
+	},
+	"fmt": {
+		Name:    "fmt",
+		Usage:   "lunex fmt <file.lx> [--check|--stdout|--write]",
+		Summary: "Format Lunex source while verifying token preservation and parse validity.",
+		Aliases: "format",
+		Sections: []helpSection{
+			{Title: "Options", Rows: []string{
+				"Default / --write   Format the file in place.",
+				"--check             Check formatting without modifying the file.",
+				"--stdout            Print formatted source without modifying the file.",
+			}},
+			{Title: "Safety", Rows: []string{
+				"AST output is accepted only when the formatted source preserves token spellings and parses successfully.",
+				"Comments are preserved exactly. Unsupported syntax uses a whitespace-only fallback to prevent source corruption.",
 			}},
 		},
 	},
@@ -266,10 +300,12 @@ var helpPages = map[string]helpPage{
 	"runtimes": {
 		Name:    "runtimes",
 		Usage:   "lunex runtimes",
-		Summary: "Show the execution engines available in this Lunex build.",
+		Summary: "Show the active Lunex execution engine, native JIT support, and runtime configuration.",
 		Sections: []helpSection{
 			{Title: "Output", Rows: []string{
-				"Lists the execution engines that can be used by the current binary.",
+				"Reports the Go-based AST interpreter and whether the adaptive native JIT is available and enabled.",
+				"Shows the native target architecture, compilation tiers, hotness threshold, verification, and tracing settings.",
+				"Explains that .nax archives and cached objects use the same interpreter/JIT execution path rather than a separate bytecode VM.",
 			}},
 		},
 	},
@@ -422,10 +458,11 @@ func printHelp() {
 	printHelpGroup("Project and execution", []string{
 		"run <file>                 Compile and run a source file or NAX archive",
 		"start                      Run the project entry from lunex.toml",
-		"debug <file>               Run with detailed compile and execution diagnostics",
+		"debug <file>               Run with runtime tracing, profiling, and diagnostic reports",
 		"-e \"<code>\"              Run a source snippet directly",
 		"repl                       Start the interactive REPL",
 		"check <file>               Check a source file without running it",
+		"fmt <file>                 Format source with integrity verification",
 		"see_errors <file>          Show detailed compiler errors",
 		"bench <file>               Run with timing output",
 	})
@@ -449,7 +486,7 @@ func printHelp() {
 		"memcache [clear]           Show or clear the process memory cache",
 		"set cache <dir>            Configure the disk cache location",
 		"platform                   Show platform and adapter diagnostics",
-		"runtimes                   Show available execution engines",
+		"runtimes                   Show the AST interpreter and native JIT capabilities",
 		"lsp                        Start the Lunex language server",
 		"env                        Show module stores and project status",
 		"link                       Link project bin commands",
@@ -498,7 +535,7 @@ func printHelpCompact() {
 	fmt.Println("Commands:")
 	compact := []string{
 		"run <file>", "start", "debug <file>", "-e \"<code>\"", "repl", "check <file>",
-		"see_errors <file>", "init", "pack <file|directory>", "unpack <file.nax>", "install",
+		"see_errors <file>", "fmt <file>", "init", "pack <file|directory>", "unpack <file.nax>", "install",
 		"add <url>", "remove <library>", "update [library]", "list", "cache [clear]", "memcache [clear]",
 		"set cache <dir>", "platform", "runtimes", "lsp", "bench <file>", "env", "link", "version", "help [command]",
 	}
@@ -521,6 +558,9 @@ func printHelpGroup(title string, rows []string) {
 
 func printCommandHelp(name string) {
 	key := strings.ToLower(strings.TrimSpace(name))
+	if key == "format" {
+		key = "fmt"
+	}
 	page, ok := helpPages[key]
 	if !ok {
 		fmt.Fprintf(os.Stderr, "Unknown help topic: %s\n", name)

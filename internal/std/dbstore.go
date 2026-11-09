@@ -38,25 +38,66 @@ var storeRegistry = struct {
 	stores map[string]*sqliteStore
 }{stores: make(map[string]*sqliteStore)}
 
-func resolveDBPath(name string) (string, error) {
+func resolveDBPath(name string, databaseName ...string) (string, error) {
 	if name == "" {
 		name = "default"
-	}
-	if filepath.Ext(name) != ".db" {
-		name += ".db"
-	}
-	if filepath.IsAbs(name) {
-		return filepath.Clean(name), nil
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
 		return "", err
 	}
-	dir := filepath.Join(cwd, dbDirName)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if len(databaseName) > 0 {
+		dir := name
+		if dir == "" {
+			dir = "."
+		}
+		if !filepath.IsAbs(dir) {
+			dir = filepath.Join(cwd, dir)
+		}
+		fileName := strings.TrimSpace(databaseName[0])
+		if fileName == "" {
+			return "", fmt.Errorf("db: database name must be a file name")
+		}
+		fileName = filepath.Base(fileName)
+		if fileName == "." || fileName == ".." || fileName == string(filepath.Separator) || fileName == "/" || fileName == `\` {
+			return "", fmt.Errorf("db: database name must be a file name")
+		}
+		if filepath.Ext(fileName) == "" {
+			fileName += ".db"
+		}
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return "", err
+		}
+		return filepath.Clean(filepath.Join(dir, fileName)), nil
+	}
+	isExplicitPath := filepath.IsAbs(name) || strings.ContainsAny(name, `/\`) || strings.HasPrefix(name, ".")
+	if !isExplicitPath {
+		if filepath.Ext(name) != ".db" {
+			name += ".db"
+		}
+		dir := filepath.Join(cwd, dbDirName)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return "", err
+		}
+		return filepath.Join(dir, filepath.Base(name)), nil
+	}
+	trailingSeparator := strings.HasSuffix(name, "/") || strings.HasSuffix(name, `\`)
+	path := name
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(cwd, path)
+	}
+	path = filepath.Clean(path)
+	info, statErr := os.Stat(path)
+	isDirectory := trailingSeparator || (statErr == nil && info.IsDir())
+	if isDirectory {
+		path = filepath.Join(path, "default.db")
+	} else if filepath.Ext(path) == "" {
+		path += ".db"
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, filepath.Base(name)), nil
+	return filepath.Clean(path), nil
 }
 
 func openStore(name string) (*sqliteStore, error) {

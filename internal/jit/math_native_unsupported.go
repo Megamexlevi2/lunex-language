@@ -1,4 +1,4 @@
-//go:build !linux && !android && !darwin
+//go:build !linux && !android && !darwin && !freebsd && !windows
 
 package jit
 

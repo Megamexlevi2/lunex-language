@@ -2,7 +2,10 @@ package lunex
 
 import (
 	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"lunex/internal/adaptor"
 	"lunex/internal/ast"
@@ -13,6 +16,7 @@ import (
 	dbg "lunex/internal/debug"
 	"lunex/internal/errfmt"
 	"lunex/internal/firstrun"
+	"lunex/internal/formatter"
 	"lunex/internal/lsp"
 	"lunex/internal/manifest"
 	"lunex/internal/meta"
@@ -25,6 +29,7 @@ import (
 	goruntime "runtime"
 	"runtime/debug"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -38,6 +43,11 @@ func init() {
 
 func tuneGC() {
 	if adaptor.AndroidTuningApplied() {
+		limit := adaptor.AndroidMemoryLimitBytes()
+		if limit <= 0 {
+			limit = 200 << 20
+		}
+		runtime.StartAdaptiveGCController(limit)
 		goruntime.LockOSThread()
 		goruntime.UnlockOSThread()
 		return
@@ -48,6 +58,7 @@ func tuneGC() {
 	if os.Getenv("GOMEMLIMIT") == "" {
 		debug.SetMemoryLimit(200 << 20)
 	}
+	runtime.StartAdaptiveGCController(200 << 20)
 	goruntime.LockOSThread()
 	goruntime.UnlockOSThread()
 }
@@ -55,6 +66,9 @@ func tuneGC() {
 func safeRecover() {
 	if r := recover(); r != nil {
 		msg := fmt.Sprintf("%v", r)
+		if dbg.Enabled() {
+			dbg.PanicReport(r, debug.Stack())
+		}
 		switch {
 		case strings.Contains(msg, "stack overflow"), strings.Contains(msg, "goroutine stack exceeds"):
 			fmt.Fprintln(os.Stderr, "[31merror[RecursionError][0m: maximum call depth exceeded (infinite recursion detected)")
@@ -364,8 +378,12 @@ fn mul(a, b) {
 
 	case "debug":
 		if len(args) < 2 {
-			fmt.Fprintln(os.Stderr, "usage: lunex debug <file.lx>")
-			os.Exit(1)
+			printDebugHelp()
+			os.Exit(2)
+		}
+		if args[1] == "--help" || args[1] == "-h" {
+			printDebugHelp()
+			return
 		}
 		debugFile(args[1], args[2:])
 
@@ -378,6 +396,9 @@ fn mul(a, b) {
 			os.Exit(1)
 		}
 		parsePackCommand(args[1:])
+
+	case "fmt", "format":
+		formatFile(args[1:])
 
 	case "check":
 		if len(args) < 2 {
@@ -1165,11 +1186,15 @@ func runNTLWithCache(absPath string) {
 
 func execBinary(objectData []byte) {
 	defer safeRecover()
+	std.ResetExitCode()
 	if len(objectData) >= 5 && string(objectData[:5]) == "LXNAX" {
 		dbg.Step("running NAX archive", "Go interpreter executes the compiled AST")
 		if err := bytecode.RunNAX(objectData, pkgLoader, pkgLoader); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
+		}
+		if code := std.ConsumeExitCode(); code != 0 {
+			os.Exit(code)
 		}
 		return
 	}
@@ -1179,6 +1204,9 @@ func execBinary(objectData []byte) {
 	if err := bytecode.RunObject(objectData, pkgLoader, pkgLoader); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
+	}
+	if code := std.ConsumeExitCode(); code != 0 {
+		os.Exit(code)
 	}
 }
 
@@ -1200,48 +1228,567 @@ func seeErrors(filePath string) {
 	os.Exit(1)
 }
 
-func debugFile(filePath string, scriptArgs []string) {
-	os.Setenv("NTL_DEBUG", "1")
-	dbg.Enable()
+type debugOptions struct {
+	CPUProfilePath    string
+	HeapProfilePath   string
+	AllocProfilePath  string
+	BlockProfilePath  string
+	MutexProfilePath  string
+	TracePath         string
+	GoroutineDumpPath string
+	ReportPath        string
+	PprofAddress      string
+	KeepJIT           bool
+	ShowProfile       bool
+	ProfileLimit      int
+	ScriptArgs        []string
+}
 
-	source, err := os.ReadFile(filePath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
+func parseDebugOptions(args []string) (debugOptions, error) {
+	options := debugOptions{ShowProfile: true, ProfileLimit: 20}
+	for index := 0; index < len(args); index++ {
+		arg := args[index]
+		if arg == "--" {
+			options.ScriptArgs = append(options.ScriptArgs, args[index+1:]...)
+			break
+		}
+		readPath := func(flag string) (string, error) {
+			if index+1 >= len(args) {
+				return "", fmt.Errorf("%s requires a file path", flag)
+			}
+			index++
+			return args[index], nil
+		}
+		switch arg {
+		case "--cpu-profile":
+			value, err := readPath(arg)
+			if err != nil {
+				return options, err
+			}
+			options.CPUProfilePath = value
+		case "--mem-profile", "--heap-profile":
+			value, err := readPath(arg)
+			if err != nil {
+				return options, err
+			}
+			options.HeapProfilePath = value
+		case "--alloc-profile":
+			value, err := readPath(arg)
+			if err != nil {
+				return options, err
+			}
+			options.AllocProfilePath = value
+		case "--block-profile":
+			value, err := readPath(arg)
+			if err != nil {
+				return options, err
+			}
+			options.BlockProfilePath = value
+		case "--mutex-profile":
+			value, err := readPath(arg)
+			if err != nil {
+				return options, err
+			}
+			options.MutexProfilePath = value
+		case "--trace":
+			value, err := readPath(arg)
+			if err != nil {
+				return options, err
+			}
+			options.TracePath = value
+		case "--goroutines":
+			value, err := readPath(arg)
+			if err != nil {
+				return options, err
+			}
+			options.GoroutineDumpPath = value
+		case "--report":
+			value, err := readPath(arg)
+			if err != nil {
+				return options, err
+			}
+			options.ReportPath = value
+		case "--pprof":
+			value, err := readPath(arg)
+			if err != nil {
+				return options, err
+			}
+			options.PprofAddress = value
+		case "--preserve-jit":
+			options.KeepJIT = true
+		case "--profile":
+			options.ShowProfile = true
+		case "--no-profile":
+			options.ShowProfile = false
+		case "--profile-limit":
+			value, err := readPath(arg)
+			if err != nil {
+				return options, err
+			}
+			limit, parseErr := strconv.Atoi(value)
+			if parseErr != nil || limit < 1 || limit > 1000 {
+				return options, fmt.Errorf("--profile-limit must be between 1 and 1000")
+			}
+			options.ProfileLimit = limit
+		case "--no-color":
+			_ = os.Setenv("NO_COLOR", "1")
+			errfmt.SetColorEnabled(false)
+			dbg.SetColorEnabled(false)
+		case "--help", "-h":
+			return options, errors.New("help")
+		default:
+			if strings.HasPrefix(arg, "-") {
+				return options, fmt.Errorf("unknown debug option %q; use `lunex help debug`", arg)
+			}
+			options.ScriptArgs = append(options.ScriptArgs, arg)
+		}
 	}
+	return options, nil
+}
+
+func printDebugHelp() {
+	fmt.Println("usage: lunex debug <file.lx|file.nax> [options] [-- script-args...]")
+	fmt.Println()
+	fmt.Println("options:")
+	fmt.Println("  --cpu-profile <file>   write a Go CPU profile (pprof)")
+	fmt.Println("  --mem-profile <file>   write a Go in-use heap profile (pprof)")
+	fmt.Println("  --alloc-profile <file> write cumulative allocation samples (pprof)")
+	fmt.Println("  --block-profile <file> write blocking and synchronization data")
+	fmt.Println("  --mutex-profile <file> write mutex contention data")
+	fmt.Println("  --trace <file>         write a Go execution trace")
+	fmt.Println("  --goroutines <file>    write all goroutine stacks")
+	fmt.Println("  --report <file>        write a machine-readable JSON report")
+	fmt.Println("  --pprof <host:port>    expose live diagnostics on loopback only")
+	fmt.Println("  --preserve-jit         keep the normal JIT execution path")
+	fmt.Println("  --profile              show the Lunex function profile (default)")
+	fmt.Println("  --no-profile           disable the function profile table")
+	fmt.Println("  --profile-limit <n>    maximum functions in the profile table")
+	fmt.Println("  --no-color             disable ANSI colors")
+	fmt.Println("  --                     pass remaining arguments to the Lunex program")
+}
+
+func debugFile(filePath string, args []string) {
+	options, optionErr := parseDebugOptions(args)
+	if optionErr != nil {
+		if optionErr.Error() == "help" {
+			printDebugHelp()
+			return
+		}
+		fmt.Fprintln(os.Stderr, "debug options:", optionErr)
+		printDebugHelp()
+		os.Exit(2)
+	}
+
+	startedAt := time.Now().UTC()
+	totalStarted := time.Now()
+	_ = os.Setenv("NTL_DEBUG", "1")
+	dbg.Enable()
 
 	absPath, err := filepath.Abs(filePath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "cannot resolve target path: %v\n", err)
 		os.Exit(1)
 	}
-
-	c := newCompiler()
-	result := c.CompileSource(string(source), absPath)
-	if !result.Success {
-		fmt.Fprintf(os.Stderr, "%s: %d compile error(s)\n\n", filePath, len(result.Errors))
-		for _, e := range result.Errors {
-			fmt.Fprint(os.Stderr, errfmt.Format(e))
-		}
-		os.Exit(1)
-	}
-	fmt.Fprintf(os.Stderr, "%s: compiled cleanly, running with full trace...\n\n", filePath)
-
-	prevArgs := os.Args
-	os.Args = append([]string{absPath}, scriptArgs...)
-	defer func() { os.Args = prevArgs }()
-
-	chunk := &bytecode.ExportedChunk{
-		Name:       absPath,
-		SourceFile: absPath,
-		SourceText: string(source),
-	}
-	objectData, err := bytecode.EncodeExportedWithAST(chunk, result.AST)
+	targetData, err := os.ReadFile(absPath)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		fmt.Fprintf(os.Stderr, "cannot read %s: %v\n", absPath, err)
 		os.Exit(1)
 	}
-	execBinary(objectData)
+	fileInfo, err := os.Stat(absPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cannot inspect %s: %v\n", absPath, err)
+		os.Exit(1)
+	}
+
+	isSource := strings.EqualFold(filepath.Ext(absPath), ".lx")
+	isArchive := len(targetData) >= 5 && string(targetData[:5]) == "LXNAX"
+	if !isSource && !strings.EqualFold(filepath.Ext(absPath), ".nax") {
+		fmt.Fprintf(os.Stderr, "unsupported debug target %q; expected a .lx source file or .nax binary\n", absPath)
+		os.Exit(2)
+	}
+
+	dbg.Header(absPath)
+	dbg.Section("Target loading")
+	dbg.Step("target loaded", fmt.Sprintf("%d bytes", len(targetData)))
+
+	compilerInstance := newCompiler()
+	var tree *ast.Node
+	var compileDuration time.Duration
+	if isSource {
+		sourceText := string(targetData)
+		dbg.Step("source metadata", fmt.Sprintf("%d lines", strings.Count(sourceText, "\n")+1))
+		dbg.Section("Compilation")
+		compilerStarted := time.Now()
+		result := compilerInstance.CompileSource(sourceText, absPath)
+		compileDuration = time.Since(compilerStarted)
+		if !result.Success {
+			fmt.Fprintf(os.Stderr, "\nCompilation failed: %d error(s)\n", len(result.Errors))
+			for _, diagnostic := range result.Errors {
+				fmt.Fprint(os.Stderr, errfmt.Format(diagnostic))
+			}
+			for _, diagnostic := range result.Warnings {
+				fmt.Fprint(os.Stderr, errfmt.Format(diagnostic))
+			}
+			var firstCompileError error
+			if len(result.Errors) > 0 {
+				firstCompileError = result.Errors[0]
+			}
+			report := buildDebugReport(startedAt, absPath, fileInfo.Size(), sourceText, "compile_failed", "compile", 1, compileDuration, 0, time.Since(totalStarted), compilerInstance, firstCompileError)
+			for _, diagnostic := range result.Errors {
+				if snapshot, _ := dbg.ErrorSnapshot(diagnostic); snapshot != nil {
+					report.Diagnostics = append(report.Diagnostics, *snapshot)
+				}
+			}
+			if options.ReportPath != "" {
+				if writeErr := dbg.WriteReport(options.ReportPath, report); writeErr != nil {
+					fmt.Fprintf(os.Stderr, "cannot write diagnostic report: %v\n", writeErr)
+				}
+			}
+			os.Exit(1)
+		}
+		for _, diagnostic := range result.Warnings {
+			fmt.Fprint(os.Stderr, errfmt.Format(diagnostic))
+		}
+		tree = result.AST
+		dbg.StepOK("OK", "compilation", compileDuration.Round(time.Microsecond).String())
+	} else {
+		compilerInstance.Interpreter().SetNTLLoader(pkgLoader)
+		compilerInstance.Interpreter().SetPkgLoader(pkgLoader)
+		if isArchive {
+			dbg.StepOK("OK", "NAX archive", "compiled application package")
+		} else {
+			dbg.StepOK("OK", "compiled object", "precompiled Lunex program")
+		}
+	}
+
+	compilerInstance.Interpreter().SetDiagnosticTracing(true)
+	compilerInstance.Interpreter().SetDiagnosticJIT(options.KeepJIT)
+	if options.KeepJIT {
+		dbg.StepWarn("JIT diagnostics", "optimized frames and source locations may be less precise")
+	}
+	previousArgs := os.Args
+	os.Args = append([]string{absPath}, options.ScriptArgs...)
+	defer func() { os.Args = previousArgs }()
+	std.ResetExitCode()
+
+	var liveServer *dbg.LiveServer
+	if options.PprofAddress != "" {
+		liveServer, err = dbg.StartLiveDiagnostics(options.PprofAddress, compilerInstance.Interpreter().GetProfiler())
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "cannot start live diagnostics: %v\n", err)
+			os.Exit(1)
+		}
+		defer liveServer.Close()
+		baseURL := "http://" + liveServer.Address()
+		dbg.StepOK("LIVE", "pprof endpoint", baseURL+"/debug/pprof/")
+		dbg.Step("Lunex function profile", baseURL+"/debug/lunex/functions")
+		dbg.Step("Lunex runtime metrics", baseURL+"/debug/lunex/runtime")
+	}
+
+	dbg.Section("Runtime instrumentation")
+	if options.CPUProfilePath != "" {
+		dbg.Step("CPU profile", options.CPUProfilePath)
+	}
+	if options.HeapProfilePath != "" {
+		dbg.Step("heap profile", options.HeapProfilePath)
+	}
+	if options.AllocProfilePath != "" {
+		dbg.Step("allocation profile", options.AllocProfilePath)
+	}
+	if options.BlockProfilePath != "" {
+		dbg.Step("block profile", options.BlockProfilePath)
+		goruntime.SetBlockProfileRate(1_000_000)
+		defer goruntime.SetBlockProfileRate(0)
+	}
+	if options.MutexProfilePath != "" {
+		dbg.Step("mutex profile", options.MutexProfilePath)
+		previousMutexRate := goruntime.SetMutexProfileFraction(1)
+		defer goruntime.SetMutexProfileFraction(previousMutexRate)
+	}
+	if options.TracePath != "" {
+		dbg.Step("execution trace", options.TracePath)
+	}
+	if options.GoroutineDumpPath != "" {
+		dbg.Step("goroutine dump", options.GoroutineDumpPath)
+	}
+
+	capture, captureErr := dbg.StartCapture(dbg.CaptureOptions{CPUProfilePath: options.CPUProfilePath, TracePath: options.TracePath})
+	if captureErr != nil {
+		fmt.Fprintf(os.Stderr, "cannot start runtime instrumentation: %v\n", captureErr)
+		os.Exit(1)
+	}
+
+	dbg.Section("Program execution")
+	runStarted := time.Now()
+	runErr, goStack, panicLunexStack := executeDebugProgram(compilerInstance, tree, absPath, string(targetData), targetData, !isSource, isArchive)
+	runDuration := time.Since(runStarted)
+	if closeErr := capture.Close(); closeErr != nil {
+		fmt.Fprintf(os.Stderr, "cannot finalize runtime instrumentation: %v\n", closeErr)
+	}
+	if len(goStack) > 0 {
+		dbg.PanicReportWithLunexStack(runErr, goStack, panicLunexStack)
+	}
+
+	exitCode := std.ConsumeExitCode()
+	status := "ok"
+	failedPhase := ""
+	if runErr != nil {
+		status = "runtime_failed"
+		if len(goStack) > 0 {
+			status = "panic"
+		}
+		failedPhase = "execution"
+		dbg.StepWarn("execution failed", runErr.Error())
+	} else if exitCode != 0 {
+		status = "program_exit"
+		failedPhase = "program"
+		dbg.StepWarn("program exit code", strconv.Itoa(exitCode))
+	} else {
+		dbg.StepOK("OK", "execution", runDuration.Round(time.Microsecond).String())
+	}
+
+	if options.HeapProfilePath != "" {
+		if profileErr := dbg.WriteHeapProfile(options.HeapProfilePath); profileErr != nil {
+			fmt.Fprintf(os.Stderr, "cannot write heap profile: %v\n", profileErr)
+		}
+	}
+	for _, profile := range []struct{ name, path string }{
+		{"allocs", options.AllocProfilePath},
+		{"block", options.BlockProfilePath},
+		{"mutex", options.MutexProfilePath},
+	} {
+		if profile.path == "" {
+			continue
+		}
+		if profileErr := dbg.WriteRuntimeProfile(profile.name, profile.path); profileErr != nil {
+			fmt.Fprintf(os.Stderr, "cannot write %s profile: %v\n", profile.name, profileErr)
+		}
+	}
+	if options.GoroutineDumpPath != "" {
+		if dumpErr := dbg.WriteGoroutineDump(options.GoroutineDumpPath); dumpErr != nil {
+			fmt.Fprintf(os.Stderr, "cannot write goroutine dump: %v\n", dumpErr)
+		}
+	}
+
+	profiler := compilerInstance.Interpreter().GetProfiler()
+	var profiles []runtime.FunctionProfileSnapshot
+	if profiler != nil {
+		profiles = profiler.Snapshot()
+	}
+	if options.ShowProfile {
+		dbg.PrintFunctionProfile(profiles, options.ProfileLimit)
+	}
+
+	totalDuration := time.Since(totalStarted)
+	dbg.Footer(totalDuration)
+	runtimeError, lunexStack := dbg.ErrorSnapshot(runErr)
+	if lunexStack == "" {
+		lunexStack = panicLunexStack
+	}
+	reportedExitCode := exitCode
+	if runErr != nil {
+		reportedExitCode = 1
+	}
+	report := debugRunReport(startedAt, absPath, fileInfo.Size(), string(targetData), status, failedPhase, reportedExitCode, compileDuration, runDuration, totalDuration, profiles, runtimeError, lunexStack, string(goStack))
+	if options.ReportPath != "" {
+		if writeErr := dbg.WriteReport(options.ReportPath, report); writeErr != nil {
+			fmt.Fprintf(os.Stderr, "cannot write diagnostic report: %v\n", writeErr)
+		} else {
+			dbg.StepOK("SAVED", "diagnostic report", options.ReportPath)
+		}
+	}
+
+	if runErr != nil || exitCode != 0 {
+		if runErr != nil {
+			os.Exit(1)
+		}
+		os.Exit(exitCode)
+	}
+}
+
+func executeDebugProgram(instance *compiler.Compiler, tree *ast.Node, filename, source string, objectData []byte, isBinary, isArchive bool) (runErr error, goStack []byte, panicLunexStack string) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			runErr = fmt.Errorf("unhandled runtime panic: %v", recovered)
+			goStack = debug.Stack()
+			panicLunexStack = dbg.FormatStack(instance.Interpreter().DiagnosticStack())
+		}
+	}()
+	if isBinary {
+		if isArchive {
+			return bytecode.RunNAXWithCompiler(objectData, instance), nil, ""
+		}
+		return bytecode.RunObjectWithCompiler(objectData, instance), nil, ""
+	}
+	return instance.RunAST(tree, filename, source), nil, ""
+}
+
+func debugRunReport(startedAt time.Time, file string, size int64, source, status, phase string, exitCode int, compileDuration, runDuration, totalDuration time.Duration, profiles []runtime.FunctionProfileSnapshot, runtimeError *dbg.RuntimeErrorSnapshot, lunexStack, goStack string) dbg.RunReport {
+	hash := sha256.Sum256([]byte(source))
+	targetKind := "source"
+	lineCount := strings.Count(source, "\n") + 1
+	if strings.HasPrefix(source, "LXNAX") {
+		targetKind = "nax_archive"
+		lineCount = 0
+	} else if !strings.EqualFold(filepath.Ext(file), ".lx") {
+		targetKind = "compiled_object"
+		lineCount = 0
+	}
+	return dbg.RunReport{
+		SchemaVersion: 1,
+		StartedAt:     startedAt,
+		Tool:          dbg.ToolSnapshot{Version: meta.FullVersion(), Go: goruntime.Version(), OS: goruntime.GOOS, Arch: goruntime.GOARCH, PID: os.Getpid(), GOMAXPROCS: goruntime.GOMAXPROCS(0)},
+		Target:        dbg.TargetSnapshot{Path: file, Kind: targetKind, SizeBytes: size, Lines: lineCount, SHA256: hex.EncodeToString(hash[:])},
+		Execution:     dbg.ExecutionSnapshot{Status: status, FailedPhase: phase, ExitCode: exitCode, CompileTimeNs: compileDuration.Nanoseconds(), ExecutionTimeNs: runDuration.Nanoseconds(), TotalTimeNs: totalDuration.Nanoseconds()},
+		Resources:     dbg.SnapshotResources(),
+		Functions:     profiles,
+		Error:         runtimeError,
+		LunexStack:    lunexStack,
+		GoStack:       goStack,
+	}
+}
+
+func buildDebugReport(startedAt time.Time, file string, size int64, source, status, phase string, exitCode int, compileDuration, runDuration, totalDuration time.Duration, instance *compiler.Compiler, compileErr error) dbg.RunReport {
+	var runtimeError *dbg.RuntimeErrorSnapshot
+	if compileErr != nil {
+		runtimeError, _ = dbg.ErrorSnapshot(compileErr)
+	}
+	var profiles []runtime.FunctionProfileSnapshot
+	if instance != nil && instance.Interpreter() != nil && instance.Interpreter().GetProfiler() != nil {
+		profiles = instance.Interpreter().GetProfiler().Snapshot()
+	}
+	report := debugRunReport(startedAt, file, size, source, status, phase, exitCode, compileDuration, runDuration, totalDuration, profiles, runtimeError, "", "")
+	return report
+}
+
+func writeFormattedFile(filePath string, data []byte, mode os.FileMode) error {
+	temp, err := os.CreateTemp(filepath.Dir(filePath), ".lunex-fmt-*")
+	if err != nil {
+		return err
+	}
+	tempPath := temp.Name()
+	defer os.Remove(tempPath)
+	if err := temp.Chmod(mode.Perm()); err != nil {
+		temp.Close()
+		return err
+	}
+	if _, err := temp.Write(data); err != nil {
+		temp.Close()
+		return err
+	}
+	if err := temp.Sync(); err != nil {
+		temp.Close()
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tempPath, filePath)
+}
+
+func formatFile(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: lunex fmt <file.lx> [--check|--stdout|--write]")
+		os.Exit(2)
+	}
+	checkOnly := false
+	stdoutOnly := false
+	filePath := ""
+	for _, arg := range args {
+		switch arg {
+		case "--check":
+			checkOnly = true
+		case "--stdout":
+			stdoutOnly = true
+		case "--write":
+		case "-h", "--help":
+			fmt.Println("usage: lunex fmt <file.lx> [--check|--stdout|--write]")
+			fmt.Println("Format a Lunex source file and verify that token semantics are preserved.")
+			fmt.Println("--check   Check formatting without modifying the file.")
+			fmt.Println("--stdout  Print formatted source without modifying the file.")
+			fmt.Println("--write   Explicitly format the file in place (the default).")
+			return
+		default:
+			if strings.HasPrefix(arg, "-") {
+				fmt.Fprintf(os.Stderr, "unknown fmt option: %s\n", arg)
+				os.Exit(2)
+			}
+			if filePath != "" {
+				fmt.Fprintln(os.Stderr, "usage: lunex fmt <file.lx> [--check|--stdout|--write]")
+				os.Exit(2)
+			}
+			filePath = arg
+		}
+	}
+	if filePath == "" || (checkOnly && stdoutOnly) {
+		fmt.Fprintln(os.Stderr, "usage: lunex fmt <file.lx> [--check|--stdout|--write]")
+		os.Exit(2)
+	}
+	source, err := os.ReadFile(filePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cannot read %s: %v\n", filePath, err)
+		os.Exit(1)
+	}
+	original := string(source)
+	result := formatter.FormatSource(original)
+	if !result.SyntaxValid || !result.Verified {
+		fmt.Fprintf(os.Stderr, "formatting refused for %s: %s\n", filePath, result.Reason)
+		os.Exit(1)
+	}
+	if checkOnly {
+		if result.Code != original {
+			fmt.Fprintf(os.Stderr, "not formatted: %s\n", filePath)
+			os.Exit(1)
+		}
+		if !result.SyntaxValid {
+			fmt.Fprintf(os.Stderr, "formatting is whitespace-stable, but syntax validation failed: %s\n", result.Reason)
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stdout, "formatted: %s\n", filePath)
+		return
+	}
+	if stdoutOnly {
+		if !result.Verified {
+			fmt.Fprintf(os.Stderr, "formatting rejected for %s: %s\n", filePath, result.Reason)
+			os.Exit(1)
+		}
+		fmt.Print(result.Code)
+		return
+	}
+	if result.Code != original {
+		writePath, resolveErr := filepath.EvalSymlinks(filePath)
+		if resolveErr != nil {
+			fmt.Fprintf(os.Stderr, "cannot resolve %s: %v\n", filePath, resolveErr)
+			os.Exit(1)
+		}
+		info, statErr := os.Stat(writePath)
+		if statErr != nil {
+			fmt.Fprintf(os.Stderr, "cannot inspect %s: %v\n", filePath, statErr)
+			os.Exit(1)
+		}
+		if writeErr := writeFormattedFile(writePath, []byte(result.Code), info.Mode()); writeErr != nil {
+			fmt.Fprintf(os.Stderr, "cannot write %s: %v\n", filePath, writeErr)
+			os.Exit(1)
+		}
+	}
+	if result.Code == original && result.Reason != "" {
+		fmt.Fprintf(os.Stderr, "source left unchanged after the formatter rejected its candidate for %s: %s\n", filePath, result.Reason)
+		os.Exit(1)
+	}
+	if result.Verified && result.SyntaxValid && (result.Strategy == "syntax" || result.Strategy == "ast") {
+		fmt.Fprintf(os.Stdout, "formatted and verified: %s\n", filePath)
+		return
+	}
+	if result.Verified && result.SyntaxValid {
+		fmt.Fprintf(os.Stdout, "formatted with conservative whitespace fallback: %s\n", filePath)
+		return
+	}
+	if result.Verified {
+		fmt.Fprintf(os.Stderr, "source tokens were preserved, but syntax validation failed for %s: %s\n", filePath, result.Reason)
+		os.Exit(1)
+	}
+	fmt.Fprintf(os.Stderr, "source was left unchanged because formatting could not be verified for %s: %s\n", filePath, result.Reason)
+	os.Exit(1)
 }
 
 func checkFile(filePath string) {
@@ -1406,7 +1953,58 @@ func clearCache() {
 }
 
 func showRuntimes() {
-	fmt.Printf("Go interpreter:   available  (handles all Lunex execution)\n")
+	status := runtime.GetNativeRuntimeStatus()
+
+	fmt.Println("Lunex execution runtimes")
+	fmt.Printf("  Host              %s/%s\n", status.Platform, status.Architecture)
+	fmt.Println()
+	fmt.Println("Execution engine")
+	fmt.Println("  AST interpreter   available (default engine and universal fallback)")
+
+	switch {
+	case status.Effective:
+		fmt.Println("  Native JIT        available and enabled")
+	case status.Available && !status.Enabled:
+		fmt.Println("  Native JIT        available but disabled")
+	case !status.Available:
+		fmt.Printf("  Native JIT        unavailable (%s)\n", status.UnavailableReason)
+	}
+
+	if status.Available {
+		fmt.Println("    targets         amd64, arm64")
+		fmt.Println("    tiers           Tier 1 baseline, Tier 2 specialized")
+	}
+
+	fmt.Println()
+	fmt.Println("Execution policy")
+	if status.Effective {
+		fmt.Println("  The AST interpreter handles general code. Eligible hot functions and loops can be compiled to native machine code.")
+		fmt.Println("  Code that is unsupported by the JIT automatically continues through the AST interpreter.")
+	} else {
+		fmt.Println("  All code runs through the AST interpreter; native compilation is not active.")
+	}
+	fmt.Println("  JIT compilation is adaptive and starts after code reaches the hotness threshold.")
+
+	fmt.Println()
+	fmt.Println("JIT configuration")
+	fmt.Printf("  Enabled           %t\n", status.Enabled)
+	fmt.Printf("  Hot threshold     %d calls/iterations\n", status.HotThreshold)
+	fmt.Printf("  Verification      %t\n", status.Verification)
+	fmt.Printf("  Native tracing    %t\n", status.TraceEnabled)
+
+	fmt.Println()
+	fmt.Println("Compiled artifacts")
+	fmt.Println("  .nax and cached objects contain serialized Lunex program data/AST; they are not separate execution engines.")
+	fmt.Println("  They use the same AST interpreter and may use the native JIT for eligible hot code.")
+
+	fmt.Println()
+	fmt.Println("Controls")
+	fmt.Println("  lunex --jit run <file>       enable native JIT for this process")
+	fmt.Println("  lunex --no-jit run <file>    disable native JIT for this process")
+	fmt.Println("  LUNEX_NATIVE=0|1             set the default JIT state")
+	fmt.Println("  LUNEX_NATIVE_HOT=<n>         set the hotness threshold (default: 32)")
+	fmt.Println("  LUNEX_NATIVE_VERIFY=0|1      enable or disable native-code verification (default: 1)")
+	fmt.Println("  LUNEX_NATIVE_TRACE=0|1       print native compilation diagnostics (default: 0)")
 }
 
 func setCacheDir(dir string) {

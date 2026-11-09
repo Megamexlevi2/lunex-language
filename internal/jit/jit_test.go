@@ -65,7 +65,7 @@ func TestNativeMathJIT(t *testing.T) {
 		{"log10", mathCall("log10", number("100")), 2},
 		{"exp", mathCall("exp", number("1")), math.E},
 		{"trunc", mathCall("trunc", number("-1.5")), -1},
-		{"hypot_compatibility", mathCall("hypot", number("-3")), 3},
+		{"hypot", mathCall("hypot", number("3"), number("4")), 5},
 		{"power_operator", binary("**", number("2"), number("4")), 16},
 		{"max", mathCall("max", number("2"), number("5"), number("3")), 5},
 		{"min", mathCall("min", number("2"), number("-5"), number("3")), -5},
@@ -286,10 +286,149 @@ func TestModuloDeopt(t *testing.T) {
 	if err := p.Run(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if ctx.Status != StatusDeopt {
+	if ctx.Status != StatusSideExit {
 		t.Fatalf("status=%d", ctx.Status)
 	}
 	_ = p.Close()
+}
+
+func TestModuloSideExitResumesRemainder(t *testing.T) {
+	assignment := assign("=", ident(0, "i"), binary("+", binary("%", number("1e308"), number("2")), number("1")))
+	loop := whileLoop(binary("<", ident(0, "i"), number("1")), block(expr(assignment)))
+	p, err := CompileLoop(loop, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	ctx := p.NewContext()
+	ctx.Budget = -1
+	if err := p.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if ctx.Status != StatusSideExit {
+		t.Fatalf("expected side exit, got status %d", ctx.Status)
+	}
+	if err := p.Resume(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if ctx.Status != StatusOK || ctx.Slots[0] != 1 {
+		t.Fatalf("status=%d i=%v", ctx.Status, ctx.Slots[0])
+	}
+}
+
+func TestHotLoopTierUp(t *testing.T) {
+	loop := whileLoop(binary("<", ident(0, "i"), number("10000")), block(expr(unary("++", ident(0, "i"), true))))
+	p, err := CompileLoop(loop, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	ctx := p.NewContext()
+	ctx.Budget = -1
+	if err := p.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if ctx.Status != StatusTierUp || ctx.HotCount != HotLoopPollLimit || ctx.Slots[0] != float64(HotLoopPollLimit-1) {
+		t.Fatalf("status=%d hot=%d i=%v", ctx.Status, ctx.HotCount, ctx.Slots[0])
+	}
+}
+
+func TestTierTwoRepeatUnrollingPreservesRemainingCount(t *testing.T) {
+	loop := &ast.Node{Type: ast.RepeatStmt, Body: block(expr(unary("++", ident(0, "i"), true)))}
+	program, err := CompileLoop(loop, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer program.Close()
+	ctx := program.NewContext()
+	ctx.Budget = -1
+	ctx.Counters[0] = 5
+	if err := program.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if ctx.Status != StatusOK || ctx.Slots[0] != 5 {
+		t.Fatalf("status=%d value=%v", ctx.Status, ctx.Slots[0])
+	}
+	checks := 0
+	for _, instruction := range program.Bytecode {
+		if instruction.Op == OpRepeatCheck {
+			checks++
+		}
+	}
+	if checks < 4 {
+		t.Fatalf("expected four-way loop unrolling, got %d repeat checks", checks)
+	}
+}
+
+func TestTierTwoRangeUnrollingPreservesStartIndex(t *testing.T) {
+	i := ident(0, "i")
+	sum := ident(0, "sum")
+	i.ResolvedAddr = &ast.ResolvedAddr{Hops: 0, Slot: 0}
+	sum.ResolvedAddr = &ast.ResolvedAddr{Hops: 1, Slot: 0}
+	loop := &ast.Node{
+		Type:      ast.ForOfStmt,
+		Name:      "i",
+		Right:     &ast.Node{Type: ast.RangeExpr, Args: []*ast.Node{number("0"), number("10")}},
+		Body:      block(expr(assign("+=", sum, i))),
+		ScopeInfo: &ast.ScopeInfo{Names: []string{"i"}},
+	}
+	program, err := CompileLoop(loop, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer program.Close()
+	ctx := program.NewContext()
+	ctx.Budget = -1
+	ctx.Counters[0] = 10
+	ctx.Slots[program.RangeStart] = 0
+	ctx.Slots[program.RangeStep] = 1
+	ctx.Slots[program.RangeIndex] = 0
+	sumSlot := -1
+	for index, ref := range program.Refs {
+		if ref.Hops == 0 && ref.Slot == 0 && index != program.RangeStart && index != program.RangeStep && index != program.RangeIndex {
+			sumSlot = index
+			break
+		}
+	}
+	if sumSlot < 0 {
+		t.Fatal("sum slot was not compiled")
+	}
+	ctx.Slots[sumSlot] = 0
+	if err := program.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if ctx.Status != StatusOK || ctx.Slots[sumSlot] != 45 {
+		t.Fatalf("status=%d sum=%v", ctx.Status, ctx.Slots[sumSlot])
+	}
+}
+
+func TestInlineFunctionEmitsIdentityGuard(t *testing.T) {
+	identity := &ast.Node{Type: ast.Block}
+	inlineBody := binary("+", ident(0, "x"), number("1"))
+	call := &ast.Node{
+		Type:   ast.CallExpr,
+		Callee: &ast.Node{Type: ast.Identifier, Name: "increment", ResolvedAddr: &ast.ResolvedAddr{Hops: 0, Slot: 2}},
+		Args:   []*ast.Node{number("2")},
+	}
+	loop := whileLoop(binary("<", ident(0, "i"), number("1")), block(
+		expr(assign("=", ident(0, "i"), number("1"))),
+		expr(assign("=", ident(0, "result"), call)),
+	))
+	program, err := CompileLoopSpecialized(loop, 1, map[string]InlineFunction{
+		"increment": {Name: "increment", Body: inlineBody, ParamSlots: []int{0}, Identity: identity},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer program.Close()
+	if len(program.InlineGuards) != 1 || program.InlineGuards[0].Expected != identity {
+		t.Fatalf("inline identity guard was not emitted: %+v", program.InlineGuards)
+	}
+	for _, instruction := range program.Bytecode {
+		if instruction.Op == OpCallSelf {
+			t.Fatal("inlined function unexpectedly emitted a self-call")
+		}
+	}
 }
 
 func TestDivisionByZero(t *testing.T) {
@@ -526,7 +665,7 @@ func TestOverflowModuloFallsBack(t *testing.T) {
 	if err := p.Run(c); err != nil {
 		t.Fatal(err)
 	}
-	if c.Status != StatusDeopt {
+	if c.Status != StatusSideExit {
 		t.Fatalf("status=%d", c.Status)
 	}
 	_ = p.Close()
@@ -748,6 +887,7 @@ func recursiveFibBody() *ast.Node {
 func runFunctionFrames(t *testing.T, p *Program, n float64, limit int) *Context {
 	t.Helper()
 	frames := make([]Context, limit+1)
+	frameBase := &frames[0]
 	for i := range frames {
 		for j, value := range p.Constants {
 			frames[i].Consts[j] = value
@@ -756,6 +896,9 @@ func runFunctionFrames(t *testing.T, p *Program, n float64, limit int) *Context 
 		frames[i].ErrorNode = -1
 		frames[i].FrameDepth = 0
 		frames[i].FrameLimit = int64(limit)
+		frames[i].FrameBase = frameBase
+		frames[i].FrameCount = int64(len(frames))
+		frames[i].FrameIndex = int64(i)
 	}
 	frames[0].Slots[p.ParamSlots[0]] = n
 	if err := p.Run(&frames[0]); err != nil {
@@ -788,6 +931,34 @@ func TestNativeRecursiveFunctionTiers(t *testing.T) {
 	}
 }
 
+func TestRecursiveNativeSideExitResumesAtCallSite(t *testing.T) {
+	large := number("1e308")
+	remainder := binary("%", large, number("7"))
+	recursive := binary("+", selfCall("accumulate", binary("-", ident(0, "n"), number("1"))), remainder)
+	conditional := &ast.Node{
+		Type:       ast.IfStmt,
+		Test:       binary("<=", ident(0, "n"), number("0")),
+		Consequent: returnStmt(number("0")),
+		Alternate:  returnStmt(recursive),
+	}
+	program, err := CompileFunction(block(conditional), "accumulate", []int{0}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer program.Close()
+	ctx := runFunctionFrames(t, program, 6, 100)
+	if ctx.Status != StatusSideExit {
+		t.Fatalf("expected a propagated recursive side exit, got status %d", ctx.Status)
+	}
+	if err := program.Resume(ctx); err != nil {
+		t.Fatal(err)
+	}
+	want := 6 * math.Mod(1e308, 7)
+	if ctx.Status != StatusOK || math.Abs(ctx.Result-want) > 1e-9 {
+		t.Fatalf("status=%d result=%v want=%v", ctx.Status, ctx.Result, want)
+	}
+}
+
 func TestNativeRecursiveFunctionDepthGuard(t *testing.T) {
 	if !Available() {
 		t.Skip("native code generation is unavailable on this architecture")
@@ -811,7 +982,7 @@ func TestNativeFunctionRejectsNonSelfCalls(t *testing.T) {
 }
 
 func TestNativeContextFrameLayout(t *testing.T) {
-	if ctxResultOff != 7464 || ctxFrameDepthOff != 7472 || ctxFrameLimitOff != 7480 || ctxFrameSize != 7488 {
+	if ctxResultOff != 7464 || ctxFrameDepthOff != 7472 || ctxFrameLimitOff != 7480 || ctxFrameSize != 7536 {
 		t.Fatalf("unexpected Context layout: result=%d depth=%d limit=%d size=%d", ctxResultOff, ctxFrameDepthOff, ctxFrameLimitOff, ctxFrameSize)
 	}
 }
@@ -947,5 +1118,38 @@ func TestTier2SupportsDeeperRegisterStack(t *testing.T) {
 	}
 	if ctx.Status != StatusOK || ctx.Result != want {
 		t.Fatalf("got %v with status %d, want %v", ctx.Result, ctx.Status, want)
+	}
+}
+
+func TestHotSlotRegisterSelection(t *testing.T) {
+	program := &Program{Bytecode: []Instruction{
+		{Op: OpLoadSlot, A: 4},
+		{Op: OpLoadSlot, A: 4},
+		{Op: OpStoreSlot, A: 4},
+		{Op: OpLoadSlot, A: 4},
+		{Op: OpStoreSlotKeep, A: 4},
+		{Op: OpLoadSlot, A: 7},
+		{Op: OpStoreSlot, A: 7},
+		{Op: OpLoadSlot, A: 7},
+	}}
+	registers := chooseHotSlotRegisters(program, []byte{14, 15})
+	if len(registers) != 2 || registers[4] != 14 || registers[7] != 15 {
+		t.Fatalf("unexpected hot-slot assignment: %#v", registers)
+	}
+}
+
+func TestConstantRangeIncludesLargerShortRanges(t *testing.T) {
+	cases := []struct {
+		node  *ast.Node
+		count int
+	}{
+		{node: &ast.Node{Type: ast.RangeExpr, Args: []*ast.Node{number("12")}}, count: 12},
+		{node: &ast.Node{Type: ast.RangeExpr, Args: []*ast.Node{number("0"), number("10")}}, count: 10},
+	}
+	for _, test := range cases {
+		_, _, count, ok := constantRange(test.node)
+		if !ok || count != test.count {
+			t.Fatalf("range count=%d ok=%v, expected %d", count, ok, test.count)
+		}
 	}
 }

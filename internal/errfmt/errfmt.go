@@ -9,6 +9,10 @@ import (
 
 var useColor = os.Getenv("NO_COLOR") == "" && os.Getenv("TERM") != "dumb"
 
+func SetColorEnabled(enabled bool) {
+	useColor = enabled
+}
+
 func terminalWidth() int {
 	return adaptor.TerminalWidth()
 }
@@ -1174,11 +1178,13 @@ func Format(err *LunexError) string {
 	if len(err.Stack) > 0 {
 		out = append(out, "")
 		out = append(out, gray("  stack trace:"))
-		for i, frame := range err.Stack {
-			if i >= 12 {
-				out = append(out, fmt.Sprintf("  %s", gray(fmt.Sprintf("    ··· %d more frames omitted", len(err.Stack)-i))))
+		shown := 0
+		for i := len(err.Stack) - 1; i >= 0; i-- {
+			if shown >= 12 {
+				out = append(out, fmt.Sprintf("  %s", gray(fmt.Sprintf("    ··· %d more frames omitted", i+1))))
 				break
 			}
+			frame := err.Stack[i]
 			fn := frame.FnName
 			if fn == "" {
 				fn = "<anonymous>"
@@ -1195,6 +1201,7 @@ func Format(err *LunexError) string {
 				frameStr += gray(")")
 			}
 			out = append(out, frameStr)
+			shown++
 		}
 	}
 

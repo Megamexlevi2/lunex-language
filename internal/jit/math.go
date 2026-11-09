@@ -25,12 +25,15 @@ const (
 	MathMax
 	MathMin
 	MathAtan2
+	MathHypot
 )
 
 func mathFunction(name string) (int, bool) {
 	switch name {
-	case "abs", "hypot":
+	case "abs":
 		return MathAbs, true
+	case "hypot":
+		return MathHypot, true
 	case "pow":
 		return MathPow, true
 	case "atan2":
@@ -80,7 +83,7 @@ func mathFunction(name string) (int, bool) {
 
 func mathFunctionArity(id int) int {
 	switch id {
-	case MathPow, MathAtan2, MathMax, MathMin:
+	case MathPow, MathAtan2, MathMax, MathMin, MathHypot:
 		return 2
 	case MathAbs, MathCeil, MathFloor, MathRound, MathSqrt, MathCbrt, MathSin, MathCos, MathTan, MathAsin, MathAcos, MathAtan, MathLog, MathLog2, MathLog10, MathExp, MathTrunc, MathSign:
 		return 1
@@ -150,6 +153,8 @@ func nativeMathValue(id int, a, b float64) float64 {
 		return math.Pow(a, b)
 	case MathAtan2:
 		return math.Atan2(a, b)
+	case MathHypot:
+		return math.Hypot(a, b)
 	case MathSign:
 		if a > 0 {
 			return 1

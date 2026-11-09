@@ -1,6 +1,6 @@
 # Standard Library Reference
 
-Complete API reference for all built-in modules in Lunex v0.9.4.
+Complete API reference for all built-in modules in Lunex v0.9.6-beta.
 
 All modules are embedded in the Lunex binary — no installation required.
 Import any module with `@import("std.<name>")`.
@@ -1311,30 +1311,44 @@ while server-to-client frames are sent unmasked as required by RFC 6455.
 val db = @import("std.db")
 ```
 
-`std.db` is a persistent document database backed by SQLite. Databases are
-stored as `.db` files under `.lunex/data/`, and data survives process
-restarts.
+`std.db` stores documents in a real SQLite database, so your data is still
+there the next time the program starts. You can keep the default project storage
+or choose the exact file or folder for each database.
 
-### Database lifecycle
+### Opening a database
 
-| Function | Description |
+| Call | What it does |
 |---|---|
-| `db.open(name?)` | Open or create a database. The default name is `default`. |
-| `db.create(name?)` | Alias for `db.open`. |
-| `db.connect(name?)` | Alias for `db.open`. |
-| `db.drop(name)` | Delete a database file and its SQLite sidecar files. |
-| `db.list()` | Return database names found under `.lunex/data/`. |
-| `db.table(name)` | Get or create a table on the default database. |
+| `db.open()` | Opens or creates the default database at `.lunex/data/default.db`. |
+| `db.open("app")` | Opens or creates `.lunex/data/app.db`. A simple name keeps using the project storage location. |
+| `db.open("./data/app.db")` | Opens or creates that file relative to the current working directory. Parent folders are created when needed. Absolute paths work too. |
+| `db.open("./data", "app")` | Stores `app.db` inside the selected folder. The folder is created if needed. |
+| `db.open("./data/")` | Uses `default.db` inside that folder. An existing directory is also recognized without the trailing slash. |
+| `db.create(...)` / `db.connect(...)` | Same behavior as `db.open(...)`. |
+| `db.drop(path)` | Deletes the selected database file and its SQLite sidecar files. Use the same path style used to open it. |
+| `db.drop("./data", "app")` | Deletes `app.db` from the selected folder. |
+| `db.list()` | Lists database names in the default `.lunex/data/` folder. |
+| `db.table(name)` | Gets or creates a table in the default database. |
 | `db.collection(name)` | Alias for `db.table`. |
+
+A plain name such as `"app"` is still convenient for small projects. Use a path
+when you want the file beside your source, in an application data folder, or in a
+location chosen by your program. `database.path` tells you which file was opened.
 
 A database object exposes `table`, `collection`, `tables`, `drop`, `transaction`,
 `dump`, `load`, `close`, `name`, and `path`.
 
 ```lx
-val database = db.open("app")
-val users = database.table("users")
-io.log(database.path)
-database.close()
+val io = @import("std.io")
+val db = @import("std.db")
+
+fn main() {
+  val database = db.open("./data", "docs-example")
+  val users = database.table("users")
+  io.log("Database file:", database.path)
+  users.insert({ name: "Alice" })
+  database.close()
+}
 ```
 
 ### Schema
@@ -2274,6 +2288,8 @@ val testing = @import("std.testing")
 ```
 
 `std.testing` provides test registration, named groups, lifecycle hooks, parameterized cases, assertions, expected failures, retries, tags, assertion plans, deterministic snapshots, diagnostics, filtering, and structured results. The implementation is written in Lunex and uses standard library modules for host interaction.
+
+When `testing.run()` reports a failed run, the CLI records exit status `1` while still returning the structured result and allowing the rest of the script to finish. The CLI applies that status after execution, so automated test commands fail correctly without interrupting cleanup or suppressing the test summary.
 
 ### API
 

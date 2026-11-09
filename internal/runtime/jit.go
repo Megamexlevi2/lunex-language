@@ -18,6 +18,7 @@ var (
 	nativeEnabled    bool
 	nativeHotLimit   int64
 	nativeTrace      bool
+	nativeVerify     bool
 )
 
 func loadNativeConfig() {
@@ -25,7 +26,8 @@ func loadNativeConfig() {
 		nativeEnabled = resolveNativeBool("LUNEX_NATIVE", true)
 		nativeHotLimit = resolveNativeInt("LUNEX_NATIVE_HOT", 32)
 		nativeTrace = resolveNativeBool("LUNEX_NATIVE_TRACE", false)
-		jit.SetVerify(resolveNativeBool("LUNEX_NATIVE_VERIFY", true))
+		nativeVerify = resolveNativeBool("LUNEX_NATIVE_VERIFY", true)
+		jit.SetVerify(nativeVerify)
 		if nativeTrace {
 			fmt.Fprintf(os.Stderr, "lunex native: enabled=%v available=%v hot=%d\n", nativeEnabled, jit.Available(), nativeHotLimit)
 		}
@@ -37,17 +39,51 @@ func SetNativeEnabled(enabled bool) {
 	nativeEnabled = enabled
 }
 
+type NativeRuntimeStatus struct {
+	Enabled           bool
+	Available         bool
+	Effective         bool
+	Architecture      string
+	Platform          string
+	HotThreshold      int64
+	TraceEnabled      bool
+	Verification      bool
+	UnavailableReason string
+}
+
+func GetNativeRuntimeStatus() NativeRuntimeStatus {
+	loadNativeConfig()
+	available, reason := jit.NativeSupport()
+	return NativeRuntimeStatus{
+		Enabled:           nativeEnabled,
+		Available:         available,
+		Effective:         nativeEnabled && available,
+		Architecture:      goruntime.GOARCH,
+		Platform:          goruntime.GOOS,
+		HotThreshold:      nativeHotLimit,
+		TraceEnabled:      nativeTrace,
+		Verification:      nativeVerify,
+		UnavailableReason: reason,
+	}
+}
+
 type jitLoopState struct {
-	hits    int64
-	current *jit.Program
-	never   bool
-	notes   map[string]bool
+	hits       int64
+	hotCount   int64
+	profiles   map[string]*loopValueProfile
+	current    *jit.Program
+	tier1      *jit.Program
+	compiling  bool
+	tier2Tried bool
+	never      bool
+	notes      map[string]bool
 }
 
 type jitFunctionState struct {
 	hits       int64
 	current    *jit.Program
 	tier1      *jit.Program
+	compiling  bool
 	tier2Tried bool
 	never      bool
 	taskNever  bool
@@ -114,7 +150,7 @@ func (interp *Interpreter) ensureJITMap() {
 	}
 }
 
-func (interp *Interpreter) selectJIT(node *ast.Node) (*jit.Program, bool) {
+func (interp *Interpreter) selectJIT(node *ast.Node, env *Environment) (*jit.Program, bool) {
 	loadNativeConfig()
 	if interp == nil || node == nil || !nativeEnabled || !jit.Available() {
 		return nil, true
@@ -130,43 +166,127 @@ func (interp *Interpreter) selectJIT(node *ast.Node) (*jit.Program, bool) {
 	if state.never {
 		return nil, true
 	}
+	recordLoopValueProfiles(state, env)
+	inlineTargets := inlineFunctionsForEnvironment(env)
+	stableValues := stableLoopValues(state)
+	state.hits++
+	tier2Limit := nativeHotLimit * 4
+	if tier2Limit < 32 {
+		tier2Limit = 32
+	}
 	if state.current != nil {
 		if state.current.UsesMathObject && !interp.nativeMathUnmodified() {
 			_ = state.current.Close()
+			if state.tier1 != nil && state.tier1 != state.current {
+				_ = state.tier1.Close()
+			}
 			state.current = nil
+			state.tier1 = nil
 			state.never = true
 			return nil, true
 		}
+		if state.current.Tier >= 2 && len(state.current.SpecializationGuards) == 0 && len(state.current.InlineGuards) == 0 && state.tier1 != nil && state.tier1 != state.current {
+			_ = state.tier1.Close()
+			state.tier1 = nil
+		}
+		if state.current.Tier < 2 && state.hits >= tier2Limit && !state.tier2Tried && !state.compiling {
+			state.tier2Tried = true
+			state.compiling = true
+			baseProgram := state.current
+			queued := submitNativeCompilation(func() {
+				tier2, err := jit.CompileLoopSpecialized(node, 2, inlineTargets, stableValues)
+				if err == nil && !interp.stableNumericFeedback(tier2) {
+					_ = tier2.Close()
+					tier2 = nil
+					err = fmt.Errorf("numeric type feedback is not stable")
+				}
+				interp.jitMu.Lock()
+				state.compiling = false
+				if err == nil && !state.never && state.current == baseProgram {
+					if len(tier2.SpecializationGuards) > 0 || len(tier2.InlineGuards) > 0 {
+						state.tier1 = baseProgram
+					} else {
+						state.tier1 = nil
+						_ = baseProgram.Close()
+					}
+					state.current = tier2
+					interp.jitMu.Unlock()
+					if nativeTrace {
+						fmt.Fprintf(os.Stderr, "lunex native: loop at line %d tier 2 compilation complete\n", node.Line)
+					}
+					return
+				}
+				interp.jitMu.Unlock()
+				if tier2 != nil {
+					_ = tier2.Close()
+				}
+				if err != nil && nativeTrace {
+					fmt.Fprintf(os.Stderr, "lunex native: loop at line %d tier 2 rejected: %v\n", node.Line, err)
+				}
+			})
+			if !queued {
+				state.compiling = false
+				state.tier2Tried = false
+			}
+		}
 		return state.current, false
 	}
-	state.hits++
-	if state.hits < nativeHotLimit {
+	if state.hits < nativeHotLimit || state.compiling {
 		return nil, false
 	}
-	program, err := jit.CompileLoop(node, 2)
-	if err != nil {
-		program, err = jit.CompileLoop(node, 1)
-	}
-	if err != nil {
-		state.never = true
+	state.compiling = true
+	hits := state.hits
+	queued := submitNativeCompilation(func() {
+		program, err := jit.CompileLoopSpecialized(node, 2, inlineTargets, stableValues)
+		if err == nil && !interp.stableNumericFeedback(program) {
+			_ = program.Close()
+			program = nil
+			err = fmt.Errorf("numeric type feedback is not stable")
+		}
+		var genericFallback *jit.Program
+		if err == nil && (len(program.SpecializationGuards) > 0 || len(program.InlineGuards) > 0) {
+			genericFallback, _ = jit.CompileLoopSpecialized(node, 1, nil, nil)
+		}
+		if err != nil {
+			program, err = jit.CompileLoopSpecialized(node, 1, inlineTargets, nil)
+		}
+		interp.jitMu.Lock()
+		state.compiling = false
+		if err != nil {
+			state.never = true
+			interp.jitMu.Unlock()
+			if nativeTrace {
+				fmt.Fprintf(os.Stderr, "lunex native: loop at line %d rejected: %v\n", node.Line, err)
+			}
+			return
+		}
+		if state.never || state.current != nil {
+			_ = program.Close()
+			if genericFallback != nil {
+				_ = genericFallback.Close()
+			}
+			interp.jitMu.Unlock()
+			return
+		}
+		state.current = program
+		if program.Tier < 2 {
+			state.tier1 = program
+			state.tier2Tried = true
+		} else if genericFallback != nil {
+			state.tier1 = genericFallback
+		}
+		interp.jitMu.Unlock()
 		if nativeTrace {
-			fmt.Fprintf(os.Stderr, "lunex native: loop at line %d rejected: %v\n", node.Line, err)
+			fmt.Fprintf(os.Stderr, "lunex native: loop at line %d compiled after %d iterations, tier=%d fast=%v\n", node.Line, hits, program.Tier, program.HasFastCode())
+			if program.FastNote != "" {
+				fmt.Fprintf(os.Stderr, "lunex native: loop at line %d fast path rejected: %s\n", node.Line, program.FastNote)
+			}
 		}
-		return nil, true
+	})
+	if !queued {
+		state.compiling = false
 	}
-	if program.UsesMathObject && !interp.nativeMathUnmodified() {
-		_ = program.Close()
-		state.never = true
-		return nil, true
-	}
-	state.current = program
-	if nativeTrace {
-		fmt.Fprintf(os.Stderr, "lunex native: loop at line %d compiled after %d iterations, tier=%d fast=%v\n", node.Line, state.hits, state.current.Tier, len(state.current.FastCode) != 0)
-		if state.current.FastNote != "" {
-			fmt.Fprintf(os.Stderr, "lunex native: loop at line %d fast path rejected: %s\n", node.Line, state.current.FastNote)
-		}
-	}
-	return state.current, false
+	return nil, false
 }
 
 func (interp *Interpreter) selectFunctionJIT(fn *Function, body *ast.Node) (*jit.Program, *jitFunctionState, bool) {
@@ -203,53 +323,88 @@ func (interp *Interpreter) selectFunctionJIT(fn *Function, body *ast.Node) (*jit
 			state.never = true
 			return nil, state, true
 		}
-		if state.current.Tier < 2 && state.hits >= tier2Limit && !state.tier2Tried {
+		if state.current.Tier >= 2 && state.tier1 != nil && state.tier1 != state.current {
+			_ = state.tier1.Close()
+			state.tier1 = nil
+		}
+		if state.current.Tier < 2 && state.hits >= tier2Limit && !state.tier2Tried && !state.compiling {
 			state.tier2Tried = true
 			if !state.current.Recursive {
+				state.compiling = true
 				paramSlots := make([]int, len(fn.Params))
 				for i, param := range fn.Params {
 					paramSlots[i] = param.ResolvedSlot
 				}
-				tier2, err := jit.CompileFunction(body, fn.Name, paramSlots, 2)
-				if err == nil {
-					if tier2.UsesMathObject && !interp.nativeMathUnmodified() {
+				baseProgram := state.current
+				queued := submitNativeCompilation(func() {
+					tier2, err := jit.CompileFunction(body, fn.Name, paramSlots, 2)
+					if err == nil && !interp.stableNumericFeedback(tier2) {
 						_ = tier2.Close()
-					} else {
-						state.current = tier2
+						tier2 = nil
+						err = fmt.Errorf("numeric type feedback is not stable")
 					}
-				} else if nativeTrace {
-					fmt.Fprintf(os.Stderr, "lunex native: function %s tier 2 rejected: %v\n", fn.Name, err)
+					interp.jitMu.Lock()
+					state.compiling = false
+					if err == nil && !state.never && state.current == baseProgram {
+						state.current = tier2
+						interp.jitMu.Unlock()
+						if nativeTrace {
+							fmt.Fprintf(os.Stderr, "lunex native: function %s tier 2 compilation complete\n", fn.Name)
+						}
+						return
+					}
+					interp.jitMu.Unlock()
+					if tier2 != nil {
+						_ = tier2.Close()
+					}
+					if err != nil && nativeTrace {
+						fmt.Fprintf(os.Stderr, "lunex native: function %s tier 2 rejected: %v\n", fn.Name, err)
+					}
+				})
+				if !queued {
+					state.compiling = false
 				}
 			}
 		}
 		return state.current, state, false
 	}
-	if state.hits < nativeHotLimit {
+	if state.hits < nativeHotLimit || state.compiling {
 		return nil, state, false
 	}
+	state.compiling = true
 	paramSlots := make([]int, len(fn.Params))
 	for i, param := range fn.Params {
 		paramSlots[i] = param.ResolvedSlot
 	}
-	tier1, err := jit.CompileFunction(body, fn.Name, paramSlots, 1)
-	if err != nil {
-		state.never = true
-		if nativeTrace {
-			fmt.Fprintf(os.Stderr, "lunex native: function %s rejected: %v\n", fn.Name, err)
+	hits := state.hits
+	queued := submitNativeCompilation(func() {
+		tier1, err := jit.CompileFunction(body, fn.Name, paramSlots, 1)
+		interp.jitMu.Lock()
+		state.compiling = false
+		if err != nil {
+			state.never = true
+			interp.jitMu.Unlock()
+			if nativeTrace {
+				fmt.Fprintf(os.Stderr, "lunex native: function %s rejected: %v\n", fn.Name, err)
+			}
+			return
 		}
-		return nil, state, true
+		if state.never || state.current != nil {
+			_ = tier1.Close()
+			interp.jitMu.Unlock()
+			return
+		}
+		state.tier1 = tier1
+		state.current = tier1
+		interp.jitMu.Unlock()
+		if nativeTrace {
+			fmt.Fprintf(os.Stderr, "lunex native: function %s compiled after %d calls, tier 1 recursive=%v\n", fn.Name, hits, tier1.Recursive)
+		}
+	})
+	if !queued {
+		state.compiling = false
 	}
-	if tier1.UsesMathObject && !interp.nativeMathUnmodified() {
-		_ = tier1.Close()
-		state.never = true
-		return nil, state, true
-	}
-	state.tier1 = tier1
-	state.current = tier1
-	if nativeTrace {
-		fmt.Fprintf(os.Stderr, "lunex native: function %s compiled after %d calls, tier 1 recursive=%v\n", fn.Name, state.hits, tier1.Recursive)
-	}
-	return state.current, state, false
+	return nil, state, false
 }
 
 func fnParamHasDefault(value interface{}) bool {
@@ -263,6 +418,9 @@ func fnParamHasDefault(value interface{}) bool {
 }
 
 func (interp *Interpreter) runFunctionJIT(fn *Function, body *ast.Node, args []*Value) (*Value, bool, error) {
+	if interp.diagnosticTracing && !interp.diagnosticJIT {
+		return nil, false, nil
+	}
 	if fn == nil || body == nil || len(args) != len(fn.Params) {
 		return nil, false, nil
 	}
@@ -312,6 +470,7 @@ func (interp *Interpreter) runFunctionJIT(fn *Function, body *ast.Node, args []*
 			budget = 0
 		}
 	}
+	frameBase := &frames.contexts[0]
 	for i := range frames.contexts {
 		ctx := &frames.contexts[i]
 		ctx.Budget = budget
@@ -323,17 +482,25 @@ func (interp *Interpreter) runFunctionJIT(fn *Function, body *ast.Node, args []*
 		ctx.Counters = [jit.MaxCounter]int64{}
 		ctx.FrameDepth = 0
 		ctx.FrameLimit = int64(frameCount - 1)
+		ctx.FrameBase = frameBase
+		ctx.FrameCount = int64(frameCount)
+		ctx.FrameIndex = int64(i)
 	}
 	root := &frames.contexts[0]
 	for i, arg := range args {
 		root.Slots[program.ParamSlots[i]] = arg.NumVal
 	}
 	runErr := program.Run(root)
+	if runErr == nil && root.Status == jit.StatusSideExit {
+		runErr = program.Resume(root)
+	}
 	if runErr != nil {
 		interp.jitFunctionFrames.Put(frames)
-		interp.disableFunctionJIT(state)
-		if nativeTrace {
-			fmt.Fprintf(os.Stderr, "lunex native: function %s native execution failed: %v\n", fn.Name, runErr)
+		if runErr != jit.ErrProgramClosed {
+			interp.disableFunctionJIT(state)
+			if nativeTrace {
+				fmt.Fprintf(os.Stderr, "lunex native: function %s native execution failed: %v\n", fn.Name, runErr)
+			}
 		}
 		return nil, false, nil
 	}
@@ -424,6 +591,24 @@ type jitSnapshot struct {
 }
 
 func jitEnvironmentSafe(program *jit.Program, env *Environment) bool {
+	for _, guard := range program.InlineGuards {
+		cur := env
+		for i := 0; i < guard.Hops && cur != nil; i++ {
+			cur = cur.parent
+		}
+		if cur == nil || cur.isEscaped() {
+			return false
+		}
+	}
+	for _, guard := range program.SpecializationGuards {
+		cur := env
+		for i := 0; i < guard.Hops && cur != nil; i++ {
+			cur = cur.parent
+		}
+		if cur == nil || cur.isEscaped() {
+			return false
+		}
+	}
 	for _, ref := range program.Refs {
 		if ref.Hops < 0 {
 			continue
@@ -503,9 +688,23 @@ func (interp *Interpreter) runJIT(node *ast.Node, env *Environment, repeatRemain
 }
 
 func (interp *Interpreter) runJITSetup(node *ast.Node, env *Environment, repeatRemaining int64, setup func(*jit.Program, *jit.Context)) (handled bool, deopt bool, err error) {
-	program, disable := interp.selectJIT(node)
+	return interp.runJITSetupWithHook(node, env, repeatRemaining, setup, nil)
+}
+
+func (interp *Interpreter) runJITSetupWithHook(node *ast.Node, env *Environment, repeatRemaining int64, setup func(*jit.Program, *jit.Context), finish func(*jit.Program, *jit.Context)) (handled bool, deopt bool, err error) {
+	if interp.diagnosticTracing && !interp.diagnosticJIT {
+		return false, false, nil
+	}
+	program, disable := interp.selectJIT(node, env)
 	if program == nil {
 		return false, disable, nil
+	}
+	if !jitProgramGuardsMatch(program, env) {
+		fallback := interp.loopJITFallback(node, program, env)
+		if fallback == nil {
+			return false, true, nil
+		}
+		program = fallback
 	}
 	if !jitEnvironmentSafe(program, env) {
 		interp.jitNote(node, "environment is captured by a closure or task")
@@ -517,15 +716,59 @@ func (interp *Interpreter) runJITSetup(node *ast.Node, env *Environment, repeatR
 		interp.jitNote(node, reason)
 		return false, true, nil
 	}
+	interp.jitMu.Lock()
+	if state := interp.jitLoops[node]; state != nil {
+		ctx.HotCount = state.hotCount
+	}
+	interp.jitMu.Unlock()
 	if setup != nil {
 		setup(program, ctx)
 	}
 	if err := program.Run(ctx); err != nil {
+		if err == jit.ErrProgramClosed {
+			return false, true, nil
+		}
 		interp.jitNote(node, "native run failed: "+err.Error())
 		return false, true, err
 	}
 	goruntime.KeepAlive(ctx)
-	atomic.AddInt64(&interp.execSteps, ctx.Used)
+	initialUsed := ctx.Used
+	atomic.AddInt64(&interp.execSteps, initialUsed)
+	if ctx.Status == jit.StatusSideExit {
+		if resumeErr := program.Resume(ctx); resumeErr != nil {
+			interp.jitNote(node, "native continuation failed: "+resumeErr.Error())
+			return false, false, resumeErr
+		}
+		atomic.AddInt64(&interp.execSteps, ctx.Used-initialUsed)
+	}
+	interp.jitMu.Lock()
+	if state := interp.jitLoops[node]; state != nil && ctx.Status != jit.StatusTierUp && ctx.HotCount > state.hotCount {
+		state.hotCount = ctx.HotCount
+	}
+	interp.jitMu.Unlock()
+	if finish != nil {
+		finish(program, ctx)
+	}
+	if ctx.Status == jit.StatusTierUp {
+		if commitErr := interp.commitJIT(program, ctx, env); commitErr != nil {
+			return true, false, commitErr
+		}
+		interp.jitMu.Lock()
+		if state := interp.jitLoops[node]; state != nil {
+			state.hotCount = 0
+			state.tier2Tried = false
+			limit := nativeHotLimit * 4
+			if limit < 32 {
+				limit = 32
+			}
+			if state.hits < limit {
+				state.hits = limit
+			}
+		}
+		interp.jitMu.Unlock()
+		interp.jitNote(node, "tier-up requested at a hot loop header")
+		return false, false, nil
+	}
 	switch ctx.Status {
 	case jit.StatusDeopt:
 		restoreJITWrites(snapshot)
@@ -566,6 +809,30 @@ func (interp *Interpreter) runJITSetup(node *ast.Node, env *Environment, repeatR
 		interp.jitNote(node, fmt.Sprintf("unexpected native status %d", ctx.Status))
 		return false, true, nil
 	}
+}
+
+func (interp *Interpreter) runJITWithProgress(node *ast.Node, env *Environment, repeatRemaining int64) (handled bool, deopt bool, processed int, err error) {
+	initialHotCount := int64(0)
+	processed = 0
+	handled, deopt, err = interp.runJITSetupWithHook(node, env, repeatRemaining, func(program *jit.Program, ctx *jit.Context) {
+		initialHotCount = ctx.HotCount
+	}, func(program *jit.Program, ctx *jit.Context) {
+		if ctx.Status != jit.StatusTierUp || !program.RootRepeat || program.RangeRoot {
+			return
+		}
+		count := ctx.HotCount - initialHotCount - 1
+		if count < 0 {
+			count = 0
+		}
+		if repeatRemaining >= 0 && count > repeatRemaining {
+			count = repeatRemaining
+		}
+		if count > int64(^uint(0)>>1) {
+			count = int64(^uint(0) >> 1)
+		}
+		processed = int(count)
+	})
+	return
 }
 
 func jitErrorNode(program *jit.Program, id int64) *ast.Node {

@@ -19,6 +19,16 @@ func Available() bool {
 	return nativeAvailable
 }
 
+func NativeSupport() (bool, string) {
+	if !nativeAvailable {
+		return false, fmt.Sprintf("machine-code backend is unavailable for %s", runtime.GOARCH)
+	}
+	if !executableMemoryAvailable {
+		return false, fmt.Sprintf("executable-memory backend is unavailable for %s", runtime.GOOS)
+	}
+	return true, ""
+}
+
 func runNative(code, ctx uintptr) error {
 	if !nativeAvailable || archCallNative == nil {
 		return fmt.Errorf("native execution is unavailable")

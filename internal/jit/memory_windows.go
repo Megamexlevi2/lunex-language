@@ -12,6 +12,7 @@ import (
 var flushInstructionCacheProc = windows.NewLazySystemDLL("kernel32.dll").NewProc("FlushInstructionCache")
 
 func init() {
+	executableMemoryAvailable = true
 	allocateExecutable = windowsAllocate
 	protectExecutable = windowsProtect
 	releaseExecutable = windowsRelease

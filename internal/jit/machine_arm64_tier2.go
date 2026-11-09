@@ -9,7 +9,7 @@ const (
 	t2ArmUsedReg   = 7
 	t2ArmZeroFP    = 7
 	t2ArmTmpFP     = 6
-	t2ArmMaxStack  = 30
+	t2ArmMaxStack  = 28
 )
 
 func (w *a64Writer) syncTier2Counters() {
@@ -21,7 +21,7 @@ func fmovD(rd, rn uint32) uint32 { return 0x1E604000 | (rn << 5) | rd }
 
 func emitMachineTier2(p *Program) ([]byte, error) {
 	for _, in := range p.Bytecode {
-		if in.Op == OpCallSelf || in.Op == OpMath {
+		if in.Op == OpMath && in.A != MathAbs && in.A != MathSqrt {
 			return emitMachineLegacy(p)
 		}
 	}
@@ -63,6 +63,10 @@ func emitMachineTier2(p *Program) ([]byte, error) {
 
 	w.u32(ldrX(t2ArmBudgetReg, regCtx, ctxBudgetOff))
 	w.u32(ldrX(t2ArmUsedReg, regCtx, ctxUsedOff))
+	slotRegisters := chooseHotSlotRegisters(p, []byte{30, 31})
+	for slot, register := range slotRegisters {
+		w.u32(ldrD(uint32(register), regCtx, ctxSlotsOff+slot*8))
+	}
 
 	for i, in := range p.Bytecode {
 		for _, label := range labelAt[i] {
@@ -82,11 +86,23 @@ func emitMachineTier2(p *Program) ([]byte, error) {
 		case OpPushConst:
 			w.u32(ldrD(x(d), regCtx, ctxConstsOff+in.A*8))
 		case OpLoadSlot:
-			w.u32(ldrD(x(d), regCtx, ctxSlotsOff+in.A*8))
+			if register, ok := slotRegisters[in.A]; ok {
+				w.u32(fmovD(x(d), uint32(register)))
+			} else {
+				w.u32(ldrD(x(d), regCtx, ctxSlotsOff+in.A*8))
+			}
 		case OpStoreSlot:
-			w.u32(strD(x(d-1), regCtx, ctxSlotsOff+in.A*8))
+			if register, ok := slotRegisters[in.A]; ok {
+				w.u32(fmovD(uint32(register), x(d-1)))
+			} else {
+				w.u32(strD(x(d-1), regCtx, ctxSlotsOff+in.A*8))
+			}
 		case OpStoreSlotKeep:
-			w.u32(strD(x(d-1), regCtx, ctxSlotsOff+in.A*8))
+			if register, ok := slotRegisters[in.A]; ok {
+				w.u32(fmovD(uint32(register), x(d-1)))
+			} else {
+				w.u32(strD(x(d-1), regCtx, ctxSlotsOff+in.A*8))
+			}
 		case OpDup:
 			w.u32(fmovD(x(d), x(d-1)))
 		case OpSwap:
@@ -151,6 +167,33 @@ func emitMachineTier2(p *Program) ([]byte, error) {
 			w.mark(done)
 		case OpNeg:
 			w.u32(fnegD(x(d-1), x(d-1)))
+		case OpMath:
+			if d < 1 || (in.A != MathAbs && in.A != MathSqrt) {
+				return fail(i, fmt.Errorf("unsupported tier 2 math operation %d", in.A))
+			}
+			reg := x(d - 1)
+			if in.A == MathAbs {
+				w.u32(0x1E60C000 | (reg << 5) | reg)
+			} else {
+				w.u32(0x1E61C000 | (reg << 5) | reg)
+			}
+		case OpCallSelf:
+			if !p.FunctionMode {
+				return fail(i, fmt.Errorf("self-call opcode outside function"))
+			}
+			for index := 0; index < d; index++ {
+				w.u32(strD(x(index), regCtx, ctxStackOff+index*8))
+			}
+			w.u32(addImm64(regStack, regCtx, uint32(ctxStackOff+d*8)))
+			if err := w.callSelf(p, in, returnLabel, i, d, slotRegisters); err != nil {
+				return fail(i, err)
+			}
+			w.u32(ldrX(t2ArmBudgetReg, regCtx, ctxBudgetOff))
+			w.u32(ldrX(t2ArmUsedReg, regCtx, ctxUsedOff))
+			resultDepth := d - in.A + 1
+			for index := 0; index < resultDepth; index++ {
+				w.u32(ldrD(x(index), regCtx, ctxStackOff+index*8))
+			}
 		case OpCompare:
 			trueLabel := newLocal()
 			falseLabel := newLocal()
@@ -197,6 +240,7 @@ func emitMachineTier2(p *Program) ([]byte, error) {
 				w.branch(in.Target)
 				w.mark(skip)
 			}
+		case OpHotPoll:
 		case OpTick:
 			if in.A <= 0 {
 				continue
@@ -223,8 +267,15 @@ func emitMachineTier2(p *Program) ([]byte, error) {
 			w.u32(strX(regA, regCtx, ctxCountersOff+in.A*8))
 			w.branch(done)
 			w.mark(deopt)
+			for stackIndex := 0; stackIndex < d; stackIndex++ {
+				w.u32(strD(x(stackIndex), regCtx, ctxStackOff+stackIndex*8))
+			}
+			w.movImm64(regA, uint64(i))
+			w.u32(strX(regA, regCtx, ctxResumePCOff))
+			w.movImm64(regA, uint64(d))
+			w.u32(strX(regA, regCtx, ctxStackDepthOff))
 			w.syncTier2Counters()
-			w.setStatus(StatusDeopt, int64(in.ErrorNode))
+			w.setStatus(StatusSideExit, int64(in.ErrorNode))
 			w.branch(returnLabel)
 			w.mark(done)
 		case OpRepeatCheck:
@@ -259,6 +310,9 @@ func emitMachineTier2(p *Program) ([]byte, error) {
 		w.mark(label)
 	}
 	w.mark(returnLabel)
+	for slot, register := range slotRegisters {
+		w.u32(strD(uint32(register), regCtx, ctxSlotsOff+slot*8))
+	}
 	w.syncTier2Counters()
 	w.u32(0xD65F03C0)
 	if err := w.patchAll(); err != nil {

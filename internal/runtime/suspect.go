@@ -202,12 +202,12 @@ func (interp *Interpreter) CheckCallResultUndefined(fnResult *Value, callerNode 
 			errfmt.ErrSuspectCallUndefined,
 			fmt.Sprintf("calling %sresulted in %s — the function may not return a value", calleeName, resultDesc),
 			callerNode,
-			"make sure the function ends with an explicit `return <value>` statement",
+			"make sure the function ends with an explicit `<value>` statement",
 			"a function without a `return` statement implicitly returns undefined",
 			"check for early `return` branches that forget to return a value",
 		)
 		e.ExBad = "fn make() { val x = 42 }\nval result = make()()"
-		e.ExGood = "fn make() { return 42 }\nval result = make()()"
+		e.ExGood = "fn make() { 42 }\nval result = make()()"
 		return Undefined, e
 	}
 	return nil, nil

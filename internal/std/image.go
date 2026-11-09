@@ -204,9 +204,9 @@ func imageObject(li *lunexImage) *runtime.Value {
 				return runtime.Null, err
 			}
 			li.mu.Lock()
+			defer li.mu.Unlock()
 			li.img = imaging.Resize(li.img, width, height, imaging.Lanczos)
 			updateImageDimensions(obj, li.img)
-			li.mu.Unlock()
 			return obj, nil
 		}}),
 		"crop": runtime.FuncVal(&runtime.Function{Name: "crop", Native: func(args []*runtime.Value, _ *runtime.Value) (*runtime.Value, error) {
@@ -262,26 +262,26 @@ func imageObject(li *lunexImage) *runtime.Value {
 		}}),
 		"flipH": runtime.FuncVal(&runtime.Function{Name: "flipH", Native: func(args []*runtime.Value, _ *runtime.Value) (*runtime.Value, error) {
 			li.mu.Lock()
+			defer li.mu.Unlock()
 			li.img = imaging.FlipH(li.img)
-			li.mu.Unlock()
 			return obj, nil
 		}}),
 		"flipV": runtime.FuncVal(&runtime.Function{Name: "flipV", Native: func(args []*runtime.Value, _ *runtime.Value) (*runtime.Value, error) {
 			li.mu.Lock()
+			defer li.mu.Unlock()
 			li.img = imaging.FlipV(li.img)
-			li.mu.Unlock()
 			return obj, nil
 		}}),
 		"gray": runtime.FuncVal(&runtime.Function{Name: "gray", Native: func(args []*runtime.Value, _ *runtime.Value) (*runtime.Value, error) {
 			li.mu.Lock()
+			defer li.mu.Unlock()
 			li.img = imaging.Grayscale(li.img)
-			li.mu.Unlock()
 			return obj, nil
 		}}),
 		"invert": runtime.FuncVal(&runtime.Function{Name: "invert", Native: func(args []*runtime.Value, _ *runtime.Value) (*runtime.Value, error) {
 			li.mu.Lock()
+			defer li.mu.Unlock()
 			li.img = imaging.Invert(li.img)
-			li.mu.Unlock()
 			return obj, nil
 		}}),
 		"brightness": runtime.FuncVal(&runtime.Function{Name: "brightness", Native: func(args []*runtime.Value, _ *runtime.Value) (*runtime.Value, error) {
@@ -290,8 +290,8 @@ func imageObject(li *lunexImage) *runtime.Value {
 				return runtime.Null, err
 			}
 			li.mu.Lock()
+			defer li.mu.Unlock()
 			li.img = imaging.AdjustBrightness(li.img, percentage)
-			li.mu.Unlock()
 			return obj, nil
 		}}),
 		"contrast": runtime.FuncVal(&runtime.Function{Name: "contrast", Native: func(args []*runtime.Value, _ *runtime.Value) (*runtime.Value, error) {
@@ -300,8 +300,8 @@ func imageObject(li *lunexImage) *runtime.Value {
 				return runtime.Null, err
 			}
 			li.mu.Lock()
+			defer li.mu.Unlock()
 			li.img = imaging.AdjustContrast(li.img, percentage)
-			li.mu.Unlock()
 			return obj, nil
 		}}),
 		"saturation": runtime.FuncVal(&runtime.Function{Name: "saturation", Native: func(args []*runtime.Value, _ *runtime.Value) (*runtime.Value, error) {
@@ -310,8 +310,8 @@ func imageObject(li *lunexImage) *runtime.Value {
 				return runtime.Null, err
 			}
 			li.mu.Lock()
+			defer li.mu.Unlock()
 			li.img = imaging.AdjustSaturation(li.img, percentage)
-			li.mu.Unlock()
 			return obj, nil
 		}}),
 		"paste": runtime.FuncVal(&runtime.Function{Name: "paste", Native: func(args []*runtime.Value, _ *runtime.Value) (*runtime.Value, error) {
@@ -344,8 +344,8 @@ func imageObject(li *lunexImage) *runtime.Value {
 			sourceImage := imageNRGBA(source.img)
 			source.mu.Unlock()
 			li.mu.Lock()
+			defer li.mu.Unlock()
 			li.img = imaging.Overlay(li.img, sourceImage, image.Pt(x, y), opacity)
-			li.mu.Unlock()
 			return obj, nil
 		}}),
 		"blur": runtime.FuncVal(&runtime.Function{Name: "blur", Native: func(args []*runtime.Value, _ *runtime.Value) (*runtime.Value, error) {
@@ -354,8 +354,8 @@ func imageObject(li *lunexImage) *runtime.Value {
 				return runtime.Null, err
 			}
 			li.mu.Lock()
+			defer li.mu.Unlock()
 			li.img = imaging.Blur(li.img, sigma)
-			li.mu.Unlock()
 			return obj, nil
 		}}),
 		"sharpen": runtime.FuncVal(&runtime.Function{Name: "sharpen", Native: func(args []*runtime.Value, _ *runtime.Value) (*runtime.Value, error) {
@@ -364,8 +364,8 @@ func imageObject(li *lunexImage) *runtime.Value {
 				return runtime.Null, err
 			}
 			li.mu.Lock()
+			defer li.mu.Unlock()
 			li.img = imaging.Sharpen(li.img, sigma)
-			li.mu.Unlock()
 			return obj, nil
 		}}),
 		"encode": runtime.FuncVal(&runtime.Function{Name: "encode", Native: func(args []*runtime.Value, _ *runtime.Value) (*runtime.Value, error) {

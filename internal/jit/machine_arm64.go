@@ -235,7 +235,10 @@ func ldpXPost(rt, rt2 uint32) uint32 {
 	return 0xA8C10000 | (rt2 << 10) | (31 << 5) | rt
 }
 
-func (w *a64Writer) callSelf(program *Program, in Instruction, returnLabel int) error {
+func (w *a64Writer) callSelf(program *Program, in Instruction, returnLabel, resumePC, stackDepth int, slotRegisters map[int]byte) error {
+	for slot, register := range slotRegisters {
+		w.u32(strD(uint32(register), regCtx, ctxSlotsOff+slot*8))
+	}
 	depthOK := (1 << 27) + len(w.b)
 	w.u32(ldrX(regA, regCtx, ctxFrameDepthOff))
 	w.u32(ldrX(regB, regCtx, ctxFrameLimitOff))
@@ -275,14 +278,32 @@ func (w *a64Writer) callSelf(program *Program, in Instruction, returnLabel int) 
 	w.u32(strX(regA, regCtx, ctxStatusOff))
 	w.u32(strX(regB, regCtx, ctxErrorNodeOff))
 	w.u32(strX(regC, regCtx, ctxUsedOff))
+	for slot, register := range slotRegisters {
+		w.u32(ldrD(uint32(register), regCtx, ctxSlotsOff+slot*8))
+	}
 	w.u32(ldpXPost(30, 31))
 	w.u32(ldpXPost(regCtx, regStack))
 	w.u32(ldrX(regA, regCtx, ctxStatusOff))
+	w.movImm64(regB, uint64(StatusSideExit))
+	w.u32(cmpX(regA, regB))
+	sideExit := (1 << 27) + len(w.b)
+	w.branchCond(0, sideExit)
 	w.u32(cmpXZero(regA))
 	w.branchCond(1, returnLabel)
 	if in.A > 0 {
 		w.u32(subImm64(regStack, regStack, uint32(in.A*8)))
 	}
+	done := (1 << 27) + len(w.b)
+	w.branch(done)
+	w.mark(sideExit)
+	w.movImm64(regA, uint64(resumePC))
+	w.u32(strX(regA, regCtx, ctxResumePCOff))
+	w.movImm64(regA, uint64(stackDepth))
+	w.u32(strX(regA, regCtx, ctxStackDepthOff))
+	w.movImm64(regA, uint64(in.ErrorNode))
+	w.u32(strX(regA, regCtx, ctxErrorNodeOff))
+	w.branch(returnLabel)
+	w.mark(done)
 	w.u32(strD(fp0, regStack, 0))
 	w.u32(addImm64(regStack, regStack, 8))
 	return nil
@@ -337,6 +358,16 @@ func (w *a64Writer) emitMathMinMax(id int, newLocal func() int) {
 }
 
 func (w *a64Writer) emitNativeMath(in Instruction, newLocal func() int) error {
+	if in.A == MathAbs || in.A == MathSqrt {
+		w.u32(ldrD(fp0, regStack, -8))
+		if in.A == MathAbs {
+			w.u32(0x1E60C000 | (fp0 << 5) | fp0)
+		} else {
+			w.u32(0x1E61C000 | (fp0 << 5) | fp0)
+		}
+		w.u32(strD(fp0, regStack, -8))
+		return nil
+	}
 	if in.A == MathSign {
 		w.emitMathSign(newLocal)
 		return nil
@@ -374,6 +405,10 @@ func (w *a64Writer) emitNativeMath(in Instruction, newLocal func() int) error {
 }
 
 func emitMachineLegacy(p *Program) ([]byte, error) {
+	depths, depthErr := bytecodeStackDepths(p)
+	if depthErr != nil {
+		return nil, depthErr
+	}
 	w := &a64Writer{labels: make(map[int]int)}
 	labelAt := make(map[int][]int)
 	for label, idx := range p.Labels {
@@ -493,7 +528,12 @@ func emitMachineLegacy(p *Program) ([]byte, error) {
 			w.setStatus(StatusDivisionByZero, int64(in.ErrorNode))
 			w.branch(returnLabel)
 			w.mark(deopt)
-			w.setStatus(StatusDeopt, int64(in.ErrorNode))
+			w.u32(addImm64(regStack, regStack, 8))
+			w.movImm64(regA, uint64(i))
+			w.u32(strX(regA, regCtx, ctxResumePCOff))
+			w.movImm64(regA, uint64(depths[i]))
+			w.u32(strX(regA, regCtx, ctxStackDepthOff))
+			w.setStatus(StatusSideExit, int64(in.ErrorNode))
 			w.branch(returnLabel)
 			w.mark(done)
 
@@ -565,6 +605,19 @@ func emitMachineLegacy(p *Program) ([]byte, error) {
 				w.branch(in.Target)
 				w.mark(skip)
 			}
+		case OpHotPoll:
+			if p.Tier < 2 {
+				pollDone := newLocal()
+				w.u32(ldrX(regA, regCtx, ctxHotCountOff))
+				w.u32(addImm64(regA, regA, 1))
+				w.u32(strX(regA, regCtx, ctxHotCountOff))
+				w.movImm64(regB, uint64(HotLoopPollLimit))
+				w.u32(cmpX(regA, regB))
+				w.branchCond(11, pollDone)
+				w.setStatus(StatusTierUp, int64(in.ErrorNode))
+				w.branch(returnLabel)
+				w.mark(pollDone)
+			}
 		case OpTick:
 			if in.A <= 0 {
 				continue
@@ -604,7 +657,12 @@ func emitMachineLegacy(p *Program) ([]byte, error) {
 			w.u32(strX(regA, regCtx, ctxCountersOff+in.A*8))
 			w.branch(done)
 			w.mark(deopt)
-			w.setStatus(StatusDeopt, int64(in.ErrorNode))
+			w.u32(addImm64(regStack, regStack, 8))
+			w.movImm64(regA, uint64(i))
+			w.u32(strX(regA, regCtx, ctxResumePCOff))
+			w.movImm64(regA, uint64(depths[i]))
+			w.u32(strX(regA, regCtx, ctxStackDepthOff))
+			w.setStatus(StatusSideExit, int64(in.ErrorNode))
 			w.branch(returnLabel)
 			w.mark(done)
 		case OpRepeatCheck:
@@ -626,7 +684,7 @@ func emitMachineLegacy(p *Program) ([]byte, error) {
 			if !p.FunctionMode {
 				return fail(i, fmt.Errorf("self-call opcode outside function"))
 			}
-			if err := w.callSelf(p, in, returnLabel); err != nil {
+			if err := w.callSelf(p, in, returnLabel, i, depths[i], nil); err != nil {
 				return fail(i, err)
 			}
 		case OpReturnValue:

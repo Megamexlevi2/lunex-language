@@ -130,14 +130,35 @@ func (interp *Interpreter) evalTemplate(node *ast.Node, env *Environment) (*Valu
 	defer templateBuilderPool.Put(result)
 	i := 0
 	for i < len(raw) {
-		if raw[i] == '$' && i+1 < len(raw) && raw[i+1] == '{' {
+		if raw[i] == '!' && i+1 < len(raw) && raw[i+1] == '{' {
 			i += 2
 			depth := 1
 			start := i
+			var innerQuote byte = 0
 			for i < len(raw) && depth > 0 {
-				if raw[i] == '{' {
+				c := raw[i]
+				if innerQuote != 0 {
+					if c == '\\' {
+						i++
+						if i < len(raw) {
+							i++
+						}
+						continue
+					}
+					if c == innerQuote {
+						innerQuote = 0
+					}
+					i++
+					continue
+				}
+				if c == '"' || c == '\'' || c == '`' {
+					innerQuote = c
+					i++
+					continue
+				}
+				if c == '{' {
 					depth++
-				} else if raw[i] == '}' {
+				} else if c == '}' {
 					depth--
 				}
 				if depth > 0 {
@@ -148,7 +169,7 @@ func (interp *Interpreter) evalTemplate(node *ast.Node, env *Environment) (*Valu
 			i++
 			val, err := interp.evalTemplateExpr(exprStr, env)
 			if err != nil {
-				result.WriteString("${error}")
+				result.WriteString("!{error}")
 			} else {
 				result.WriteString(val.ToString())
 			}
@@ -254,7 +275,7 @@ func (interp *Interpreter) evalObject(node *ast.Node, env *Environment) (*Value,
 					obj[k] = v
 				}
 			} else if val.Tag == TypeInstance {
-				for k, v := range val.InstVal.Fields {
+				for k, v := range val.InstVal.OwnFields() {
 					obj[k] = v
 				}
 			}
@@ -300,7 +321,7 @@ func (interp *Interpreter) evalObject(node *ast.Node, env *Environment) (*Value,
 			obj[key] = FuncVal(fn)
 		}
 	}
-	return ObjectVal(obj), nil
+	return ObjectLiteralVal(obj), nil
 }
 
 func (interp *Interpreter) evalRegex(node *ast.Node) (*Value, error) {
@@ -406,7 +427,7 @@ func (interp *Interpreter) evalDelete(node *ast.Node, env *Environment) (*Value,
 			key, _ = node.Arg.Prop.(string)
 		}
 		if obj.Tag == TypeObject {
-			delete(obj.ObjVal, key)
+			obj.DeleteObjectProperty(key)
 		}
 	}
 	return True, nil
